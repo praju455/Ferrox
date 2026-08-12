@@ -24,6 +24,8 @@ Implemented stages:
 10. Seed data for 16 industrial products with incomplete and conflicting source snippets.
 11. Alembic migration setup with an initial PostgreSQL schema migration.
 12. API hardening with production API-key enforcement, CORS allowlisting, trusted hosts, request IDs, body/upload limits, security headers, and private-network URL blocking.
+13. Product collection and source evidence APIs so PDF, URL, and text sources can share one product record.
+14. Selectable pipeline stages with retry-safe candidate extraction and idempotent review queue creation.
 
 ## Local Setup
 
@@ -131,6 +133,9 @@ flowchart TD
     Inspector -. "frontend contract" .-> Guard
     ReviewUI -. "frontend contract" .-> Guard
     Guard --> API["FastAPI backend"]
+    API --> Products["Product collection API\ncreate + list + search + delete"]
+    Products --> SourceAPI["Product source API\nattach + list PDF / URL / text"]
+    SourceAPI --> Ingest
     API --> DB[("PostgreSQL")]
     Migration["Alembic migrations"] --> DB
     API --> Ingest["Ingestion service"]
@@ -140,7 +145,7 @@ flowchart TD
     Ingest --> Sources["Raw sources\nsource_id + product_id + authority rank"]
     Sources --> DB
 
-    API --> Pipeline["Product pipeline"]
+    API --> Pipeline["Selectable product pipeline\nclassify / extract / reconcile / validate / enrich / score"]
     Pipeline --> Classify["Category classification"]
     Classify --> Schemas["Dynamic schema selector\npump / bearing / motor / fastener"]
     Schemas --> Extract["Structured extraction\nvalue + confidence + source + status + evidence"]
@@ -209,6 +214,45 @@ Structured extracted fields use this exact output shape:
 
 Mutating endpoints are protected when `INTERNAL_API_KEY` is configured. Read endpoints and `/api/v1/health` stay open for basic checks.
 
+### Create And List Products
+
+`POST /api/v1/products`
+
+```json
+{
+  "name": "Aurora End-Suction Pump AXP-200"
+}
+```
+
+`GET /api/v1/products?search=Aurora&category=Industrial%20Pump&offset=0&limit=50`
+
+Product list responses include category, dynamic schema, confidence, completeness, and timestamps.
+
+### Attach Sources To One Product
+
+`POST /api/v1/products/{product_id}/sources/text`
+
+```json
+{
+  "text": "Manufacturer: Aurora. Model: AXP-200. Flow rate 120 GPM.",
+  "source_identifier": "manual-catalog-snippet"
+}
+```
+
+`POST /api/v1/products/{product_id}/sources/url`
+
+```json
+{
+  "url": "https://example.com/product"
+}
+```
+
+`POST /api/v1/products/{product_id}/sources/pdf` uses multipart field `file`.
+
+`GET /api/v1/products/{product_id}/sources` returns complete retained raw content, parser metadata, source authority, and timestamps for traceability.
+
+`GET /api/v1/products/{product_id}/sources/{source_id}` returns one source.
+
 ### Ingest Raw Text
 
 `POST /api/v1/products/ingest/text`
@@ -245,15 +289,21 @@ Multipart form field: `file`.
 ```json
 {
   "source_ids": null,
-  "stages": null
+  "stages": ["classify", "extract", "reconcile", "validate", "enrich", "score"]
 }
 ```
 
-Returns product detail with extracted fields, validation state, confidence, completeness, alternatives, and review-triggering statuses.
+Both properties are optional. Stage subsets run in canonical pipeline order, and omitted `stages` runs the complete pipeline. Returns product detail with raw sources, extracted fields, validation state, confidence, completeness, alternatives, and review-triggering statuses.
 
 ### Get Product
 
 `GET /api/v1/products/{product_id}`
+
+The product detail response includes both `sources` and canonical `fields`.
+
+### Delete Product
+
+`DELETE /api/v1/products/{product_id}`
 
 ### List Review Items
 

@@ -12,22 +12,32 @@ from app.services.llm import LLMClient, LLMRequest
 
 
 class ProductPipeline:
+    STAGES = ("classify", "extract", "reconcile", "validate", "enrich", "score")
+
     def __init__(self, db: Session, llm: LLMClient | None = None):
         self.db = db
         self.llm = llm or LLMClient(get_settings())
 
-    def run(self, product: Product, source_ids: list[str] | None = None) -> Product:
+    def run(
+        self,
+        product: Product,
+        source_ids: list[str] | None = None,
+        stages: list[str] | None = None,
+    ) -> Product:
         sources = [source for source in product.sources if source_ids is None or source.id in source_ids]
-        if not sources:
-            return product
-        self.classify(product, sources)
-        self.extract(product, sources[:1])
-        if len(sources) > 1:
-            self.extract(product, sources[1:])
-        self.reconcile(product)
-        self.validate(product)
-        self.enrich(product)
-        self.score_and_queue(product)
+        selected = set(stages or self.STAGES)
+        if "classify" in selected and sources:
+            self.classify(product, sources)
+        if "extract" in selected and sources:
+            self.extract(product, sources)
+        if "reconcile" in selected:
+            self.reconcile(product)
+        if "validate" in selected:
+            self.validate(product)
+        if "enrich" in selected:
+            self.enrich(product)
+        if "score" in selected:
+            self.score_and_queue(product)
         self.db.commit()
         self.db.refresh(product)
         return product
@@ -41,6 +51,12 @@ class ProductPipeline:
     def extract(self, product: Product, sources: list[Source]) -> None:
         if not product.category or not product.dynamic_schema:
             self.classify(product, sources)
+        existing_by_name = {
+            field.field_name: field
+            for field in self.db.scalars(
+                select(ExtractedField).where(ExtractedField.product_id == product.id)
+            )
+        }
         for source in sources:
             prompt = f"Category: {product.category}\nSource ID: {source.id}\n\n{source.raw_content}"
             result = self.llm.complete_json(LLMRequest(task="extract", prompt=prompt, response_schema=product.dynamic_schema))
@@ -54,14 +70,9 @@ class ProductPipeline:
                     "authority_rank": source.authority_rank,
                     "evidence": payload.get("evidence"),
                 }
-                existing = self.db.scalar(
-                    select(ExtractedField).where(
-                        ExtractedField.product_id == product.id,
-                        ExtractedField.field_name == field_name,
-                    )
-                )
+                existing = existing_by_name.get(field_name)
                 if existing is None:
-                    self.db.add(ExtractedField(
+                    existing = ExtractedField(
                         product_id=product.id,
                         source_id=source.id,
                         field_name=field_name,
@@ -71,10 +82,18 @@ class ProductPipeline:
                         status=FieldStatus.extracted,
                         evidence=candidate["evidence"],
                         alternatives=[candidate],
-                    ))
+                    )
+                    self.db.add(existing)
+                    existing_by_name[field_name] = existing
                 else:
                     alternatives = existing.alternatives or []
-                    alternatives.append(candidate)
+                    candidate_key = (candidate["source_id"], candidate["value"], candidate["unit"])
+                    existing_keys = {
+                        (item.get("source_id"), item.get("value"), item.get("unit"))
+                        for item in alternatives
+                    }
+                    if candidate_key not in existing_keys:
+                        alternatives.append(candidate)
                     existing.alternatives = alternatives
         self.db.flush()
 
@@ -106,7 +125,13 @@ class ProductPipeline:
             elif not valid:
                 field.status = FieldStatus.needs_review
         for missing in sorted(required - set(by_name)):
-            self.db.add(ReviewItem(product_id=product.id, field_name=missing, reason="Required field is missing", severity="high", payload={}))
+            self._ensure_open_review(
+                product,
+                missing,
+                reason="Required field is missing",
+                severity="high",
+                payload={},
+            )
 
     def enrich(self, product: Product) -> None:
         result = self.llm.complete_json(LLMRequest(task="enrich", prompt=f"{product.category} {product.name}"))
@@ -132,13 +157,40 @@ class ProductPipeline:
         product.confidence_score = mean([field.confidence for field in product.fields]) if product.fields else 0.0
         for field in product.fields:
             if field.confidence < 0.5 or field.value in (None, ""):
-                self.db.add(ReviewItem(
-                    product_id=product.id,
-                    field_name=field.field_name,
+                self._ensure_open_review(
+                    product,
+                    field.field_name,
                     reason="Low confidence or missing extracted value",
                     severity="medium",
                     payload={"confidence": field.confidence, "value": field.value},
-                ))
+                )
+
+    def _ensure_open_review(
+        self,
+        product: Product,
+        field_name: str,
+        reason: str,
+        severity: str,
+        payload: dict[str, Any],
+    ) -> None:
+        existing = self.db.scalar(
+            select(ReviewItem).where(
+                ReviewItem.product_id == product.id,
+                ReviewItem.field_name == field_name,
+                ReviewItem.reason == reason,
+                ReviewItem.status == "open",
+            )
+        )
+        if existing is None:
+            self.db.add(
+                ReviewItem(
+                    product_id=product.id,
+                    field_name=field_name,
+                    reason=reason,
+                    severity=severity,
+                    payload=payload,
+                )
+            )
 
     def _rule_issues(self, field: ExtractedField) -> list[str]:
         issues = []

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -14,6 +15,10 @@ class ProductCreate(BaseModel):
     sources: list[SourceIn] = Field(default_factory=list)
 
 
+class ProductCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
 class ProductRead(BaseModel):
     id: str
     name: str
@@ -21,6 +26,8 @@ class ProductRead(BaseModel):
     dynamic_schema: dict[str, Any] | None
     completeness_score: float
     confidence_score: float
+    created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 
@@ -34,6 +41,28 @@ class TextIngestionRequest(BaseModel):
 class UrlIngestionRequest(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     url: HttpUrl
+
+
+class TextSourceCreate(BaseModel):
+    text: str = Field(min_length=1)
+    source_identifier: str = Field(default="manual-text", min_length=1, max_length=500)
+
+
+class UrlSourceCreate(BaseModel):
+    url: HttpUrl
+
+
+class SourceRead(BaseModel):
+    id: str
+    product_id: str
+    source_type: str
+    source_identifier: str
+    raw_content: str
+    extracted_metadata: dict[str, Any] | None
+    authority_rank: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class ExtractedFieldRead(BaseModel):
@@ -51,12 +80,13 @@ class ExtractedFieldRead(BaseModel):
 
 
 class ProductDetail(ProductRead):
+    sources: list[SourceRead] = Field(default_factory=list)
     fields: list[ExtractedFieldRead] = Field(default_factory=list)
 
 
 class PipelineRunRequest(BaseModel):
     source_ids: list[str] | None = None
-    stages: list[str] | None = None
+    stages: list[Literal["classify", "extract", "reconcile", "validate", "enrich", "score"]] | None = None
 
 
 class BatchCreateRequest(BaseModel):
