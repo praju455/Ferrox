@@ -29,8 +29,27 @@ class ReviewStatus(str, enum.Enum):
     dismissed = "dismissed"
 
 
+class UserRole(str, enum.Enum):
+    reviewer = "reviewer"
+    admin = "admin"
+
+
 def uuid_str() -> str:
     return str(uuid.uuid4())
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(500))
+    full_name: Mapped[str] = mapped_column(String(255))
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.reviewer, index=True)
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Product(Base):

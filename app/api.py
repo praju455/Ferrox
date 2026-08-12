@@ -1,22 +1,34 @@
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import require_internal_api_key
+from app.core.security import (
+    Principal,
+    create_access_token,
+    current_principal,
+    hash_password,
+    require_admin,
+    require_internal_api_key,
+    require_reviewer,
+    verify_password,
+)
 from app.db import get_db
-from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, LLMRun, PipelineJob, Product, ReviewItem, ReviewStatus, Source
+from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, LLMRun, PipelineJob, Product, ReviewItem, ReviewStatus, Source, User, UserRole
 from app.schemas import (
     BatchCreateRequest,
     BatchDetail,
@@ -35,8 +47,12 @@ from app.schemas import (
     SourceRead,
     TextSourceCreate,
     TextIngestionRequest,
+    TokenResponse,
     UrlSourceCreate,
     UrlIngestionRequest,
+    UserCreateRequest,
+    UserRead,
+    UserUpdateRequest,
 )
 from app.services.ingestion import IngestionService
 from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_batch_job, process_pipeline_job
@@ -121,6 +137,86 @@ def metrics() -> Response:
     return Response(metrics_payload(), media_type=METRICS_CONTENT_TYPE)
 
 
+@router.post("/auth/token", response_model=TokenResponse)
+def issue_token(
+    form: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    email = form.username.strip().lower()
+    user = db.scalar(select(User).where(User.email == email))
+    if not user or not user.is_active or not verify_password(form.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token, expires_in = create_access_token(user)
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+    return TokenResponse(access_token=token, expires_in=expires_in)
+
+
+@router.get("/auth/me", response_model=UserRead)
+def auth_me(
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db),
+) -> User:
+    if principal.user_id is None:
+        raise HTTPException(status_code=400, detail="Service credentials do not represent a user")
+    user = db.get(User, principal.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@router.post(
+    "/users",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
+def create_user(payload: UserCreateRequest, db: Session = Depends(get_db)) -> User:
+    email = payload.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="A valid email address is required")
+    user = User(
+        email=email,
+        password_hash=hash_password(payload.password),
+        full_name=payload.full_name.strip(),
+        role=UserRole(payload.role),
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A user with this email already exists") from exc
+    db.refresh(user)
+    return user
+
+
+@router.get("/users", response_model=list[UserRead], dependencies=[Depends(require_admin)])
+def list_users(db: Session = Depends(get_db)) -> list[User]:
+    return list(db.scalars(select(User).order_by(User.created_at.desc())))
+
+
+@router.patch("/users/{user_id}", response_model=UserRead, dependencies=[Depends(require_admin)])
+def update_user(user_id: str, payload: UserUpdateRequest, db: Session = Depends(get_db)) -> User:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "password" in updates:
+        user.password_hash = hash_password(updates.pop("password"))
+    if "role" in updates:
+        user.role = UserRole(updates.pop("role"))
+    for key, value in updates.items():
+        setattr(user, key, value.strip() if key == "full_name" else value)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 def product_or_404(product_id: str, db: Session) -> Product:
     product = db.get(Product, product_id)
     if not product:
@@ -163,7 +259,7 @@ def create_product(payload: ProductCreateRequest, db: Session = Depends(get_db))
     return product
 
 
-@router.get("/products", response_model=list[ProductRead])
+@router.get("/products", response_model=list[ProductRead], dependencies=[Depends(require_reviewer)])
 def list_products(
     search: str | None = Query(default=None, min_length=1, max_length=255),
     category: str | None = Query(default=None, max_length=120),
@@ -209,14 +305,14 @@ def add_pdf_source(product_id: str, file: UploadFile = File(...), db: Session = 
     return source
 
 
-@router.get("/products/{product_id}/sources", response_model=list[SourceRead])
+@router.get("/products/{product_id}/sources", response_model=list[SourceRead], dependencies=[Depends(require_reviewer)])
 def list_product_sources(product_id: str, db: Session = Depends(get_db)) -> list[Source]:
     product_or_404(product_id, db)
     query = select(Source).where(Source.product_id == product_id).order_by(Source.created_at.desc())
     return list(db.scalars(query))
 
 
-@router.get("/products/{product_id}/sources/{source_id}", response_model=SourceRead)
+@router.get("/products/{product_id}/sources/{source_id}", response_model=SourceRead, dependencies=[Depends(require_reviewer)])
 def get_product_source(product_id: str, source_id: str, db: Session = Depends(get_db)) -> Source:
     source = db.scalar(select(Source).where(Source.id == source_id, Source.product_id == product_id))
     if not source:
@@ -224,7 +320,7 @@ def get_product_source(product_id: str, source_id: str, db: Session = Depends(ge
     return source
 
 
-@router.get("/products/{product_id}/sources/{source_id}/content")
+@router.get("/products/{product_id}/sources/{source_id}/content", dependencies=[Depends(require_reviewer)])
 def download_product_source(product_id: str, source_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
     source = db.scalar(select(Source).where(Source.id == source_id, Source.product_id == product_id))
     if not source or not source.storage_key:
@@ -319,7 +415,7 @@ def create_pipeline_job(
     return job
 
 
-@router.get("/pipeline/jobs", response_model=list[PipelineJobRead])
+@router.get("/pipeline/jobs", response_model=list[PipelineJobRead], dependencies=[Depends(require_reviewer)])
 def list_pipeline_jobs(
     product_id: str | None = Query(default=None),
     job_status: str | None = Query(default=None, alias="status"),
@@ -334,7 +430,7 @@ def list_pipeline_jobs(
     return list(db.scalars(query.order_by(PipelineJob.created_at.desc()).limit(limit)))
 
 
-@router.get("/pipeline/jobs/{job_id}", response_model=PipelineJobRead)
+@router.get("/pipeline/jobs/{job_id}", response_model=PipelineJobRead, dependencies=[Depends(require_reviewer)])
 def get_pipeline_job(job_id: str, db: Session = Depends(get_db)) -> PipelineJob:
     job = db.get(PipelineJob, job_id)
     if not job:
@@ -345,7 +441,7 @@ def get_pipeline_job(job_id: str, db: Session = Depends(get_db)) -> PipelineJob:
 @router.get(
     "/observability/llm-runs",
     response_model=list[LLMRunRead],
-    dependencies=[Depends(require_internal_api_key)],
+    dependencies=[Depends(require_admin)],
 )
 def list_llm_runs(
     product_id: str | None = Query(default=None),
@@ -378,12 +474,12 @@ def process_queued_pipeline_job(job_id: str, db: Session = Depends(get_db)) -> P
     return process_pipeline_job(db, job)
 
 
-@router.get("/products/{product_id}", response_model=ProductDetail)
+@router.get("/products/{product_id}", response_model=ProductDetail, dependencies=[Depends(require_reviewer)])
 def get_product(product_id: str, db: Session = Depends(get_db)) -> Product:
     return product_or_404(product_id, db)
 
 
-@router.get("/reviews", response_model=list[ReviewItemRead])
+@router.get("/reviews", response_model=list[ReviewItemRead], dependencies=[Depends(require_reviewer)])
 def list_reviews(
     status: ReviewStatus | None = Query(default=None),
     severity: str | None = Query(default=None),
@@ -401,7 +497,7 @@ def list_reviews(
     return list(db.scalars(query.order_by(ReviewItem.created_at.desc()).limit(limit)))
 
 
-@router.get("/reviews/{review_id}", response_model=ReviewItemRead)
+@router.get("/reviews/{review_id}", response_model=ReviewItemRead, dependencies=[Depends(require_reviewer)])
 def get_review(review_id: str, db: Session = Depends(get_db)) -> ReviewItem:
     review = db.get(ReviewItem, review_id)
     if not review:
@@ -487,7 +583,7 @@ def create_batch(payload: BatchCreateRequest, db: Session = Depends(get_db)) -> 
     return batch
 
 
-@router.get("/batches", response_model=list[BatchRead])
+@router.get("/batches", response_model=list[BatchRead], dependencies=[Depends(require_reviewer)])
 def list_batches(
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -499,7 +595,7 @@ def list_batches(
     return list(db.scalars(query.order_by(BatchJob.created_at.desc()).limit(limit)))
 
 
-@router.get("/batches/{batch_id}", response_model=BatchDetail)
+@router.get("/batches/{batch_id}", response_model=BatchDetail, dependencies=[Depends(require_reviewer)])
 def get_batch(batch_id: str, db: Session = Depends(get_db)) -> BatchJob:
     batch = db.get(BatchJob, batch_id)
     if not batch:
@@ -517,8 +613,10 @@ def process_batch(batch_id: str, payload: BatchProcessRequest | None = None, db:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    if settings.is_production and not settings.internal_api_key:
-        raise RuntimeError("INTERNAL_API_KEY must be configured in production")
+    if settings.is_production and not settings.jwt_secret:
+        raise RuntimeError("JWT_SECRET must be configured in production")
+    if settings.is_production and len(settings.jwt_secret or "") < 32:
+        raise RuntimeError("JWT_SECRET must contain at least 32 characters in production")
     app = FastAPI(title="Industrial Product Intelligence Platform API", version="0.2.0")
     app.add_middleware(RequestSafetyMiddleware, max_request_bytes=settings.max_request_bytes)
     if settings.allowed_hosts:

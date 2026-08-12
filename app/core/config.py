@@ -10,6 +10,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://ferrox:ferrox@localhost:5432/ferrox"
     test_database_url: str = "sqlite+pysqlite:///:memory:"
     internal_api_key: str | None = None
+    jwt_secret: str | None = None
+    jwt_algorithm: str = "HS256"
+    jwt_issuer: str = "ferrox"
+    jwt_audience: str = "ferrox-api"
+    access_token_expire_minutes: int = Field(default=480, ge=5, le=10080)
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: str | None = None
     llm_provider_order: str = "gemini,groq,openai"
     gemini_api_key: str | None = None
     groq_api_key: str | None = None

@@ -133,6 +133,39 @@ class LLMRunRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int
+
+
+class UserCreateRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=12, max_length=128)
+    full_name: str = Field(min_length=1, max_length=255)
+    role: Literal["reviewer", "admin"] = "reviewer"
+
+
+class UserUpdateRequest(BaseModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
+    password: str | None = Field(default=None, min_length=12, max_length=128)
+    role: Literal["reviewer", "admin"] | None = None
+    is_active: bool | None = None
+
+
+class UserRead(BaseModel):
+    id: str
+    email: str
+    full_name: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    last_login_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class PipelineRunRequest(BaseModel):
     source_ids: list[str] | None = None
     stages: list[Literal["classify", "extract", "reconcile", "validate", "enrich", "score"]] | None = None

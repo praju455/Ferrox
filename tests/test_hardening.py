@@ -62,12 +62,12 @@ def test_pdf_endpoint_rejects_non_pdf_upload(client):
     assert response.status_code == 415
 
 
-def test_production_requires_internal_api_key(monkeypatch):
+def test_production_requires_jwt_secret(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
     get_settings.cache_clear()
 
-    with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
         create_app()
 
     get_settings.cache_clear()

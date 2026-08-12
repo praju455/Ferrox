@@ -31,6 +31,7 @@ Implemented stages:
 17. Truly asynchronous batch jobs with worker-side text, public URL, and base64 PDF ingestion plus retryable item failures.
 18. Citation-backed Gemini Google Search enrichment that persists only grounded missing-field values and their source URLs.
 19. LLM run telemetry with provider fallback attempts, model/task latency, token usage, configurable cost estimates, and Prometheus metrics.
+20. User accounts with expiring JWT access tokens, Argon2 password hashing, reviewer/admin authorization, inactive-account enforcement, and service API-key compatibility.
 
 ## Local Setup
 
@@ -61,6 +62,12 @@ To seed mock industrial products:
 
 ```bash
 .venv/bin/python -m app.seed
+```
+
+Create or reset the first administrator after setting `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`:
+
+```bash
+.venv/bin/python -m app.bootstrap_admin
 ```
 
 To create a future migration after model changes:
@@ -95,6 +102,10 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `DATABASE_URL` | Primary PostgreSQL SQLAlchemy URL. |
 | `TEST_DATABASE_URL` | Test database URL; defaults to in-memory SQLite for fast tests. |
 | `INTERNAL_API_KEY` | Optional API key for mutating endpoints. Leave blank for local-only development. |
+| `JWT_SECRET` | Signing secret for user access tokens. Required in production. |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | Token issuer and intended API audience. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT lifetime. Default: 480 minutes. |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | One-time administrator bootstrap inputs. |
 | `LLM_PROVIDER_ORDER` | Comma-separated provider order. Default: `gemini,groq,openai`. |
 | `GEMINI_API_KEY` | Primary LLM provider key. |
 | `GROQ_API_KEY` | First fallback provider key. |
@@ -128,19 +139,19 @@ Provider behavior:
 | Groq | OpenAI-compatible chat completions with `response_format: {"type": "json_object"}`. |
 | OpenAI | Chat completions with `response_format: {"type": "json_object"}`. |
 
-When `INTERNAL_API_KEY` is set, write/process endpoints require either:
+Human users authenticate with `POST /api/v1/auth/token` and send:
 
 ```text
-X-API-Key: your-key
+Authorization: Bearer your-jwt
 ```
 
-or:
+`reviewer` accounts can use catalog, ingestion, pipeline, batch, and review APIs. `admin` accounts additionally manage users and inspect LLM telemetry. Automation can still use:
 
 ```text
-Authorization: Bearer your-key
+X-API-Key: your-service-key
 ```
 
-Production mode (`APP_ENV=production`) refuses to start without `INTERNAL_API_KEY`. Every response includes `X-Request-ID`, and clients may send their own request ID for end-to-end tracing.
+Production mode (`APP_ENV=production`) refuses to start without `JWT_SECRET`. Every response includes `X-Request-ID`, and clients may send their own request ID for end-to-end tracing. Local development remains open only when neither JWT nor service-key authentication is configured.
 
 ## Architecture
 
@@ -152,7 +163,9 @@ flowchart TD
     HealthUI --> Guard["API safety layer\nCORS + trusted hosts + request ID + limits"]
     Inspector -. "frontend contract" .-> Guard
     ReviewUI -. "frontend contract" .-> Guard
-    Guard --> API["FastAPI backend"]
+    Guard --> Auth["JWT identity + role authorization\nreviewer / admin / service key"]
+    Auth --> API["FastAPI backend"]
+    Auth --> Users[("User accounts\nArgon2 password hashes")]
     API --> Products["Product collection API\ncreate + list + search + delete"]
     Products --> SourceAPI["Product source API\nattach + list PDF / URL / text"]
     SourceAPI --> Ingest
@@ -218,6 +231,7 @@ Core persisted entities:
 | `PipelineJob` | Durable product pipeline request with selected sources/stages, lifecycle timestamps, and retryable failure state. |
 | `Citation` | URL, title, and cited response span supporting one grounded enriched field. |
 | `LLMRun` | Provider attempt status, model/task, latency, token usage, estimated cost, and error context. |
+| `User` | Human account, password hash, active state, last login, and reviewer/admin role. |
 
 Structured extracted fields use this exact output shape:
 
@@ -251,7 +265,11 @@ Structured extracted fields use this exact output shape:
 
 ## API Contract
 
-Mutating endpoints are protected when `INTERNAL_API_KEY` is configured. Read endpoints and `/api/v1/health` stay open for basic checks.
+Catalog endpoints require a reviewer/admin JWT when authentication is configured. Health and metrics endpoints remain available for infrastructure probes; a service API key can authenticate automation.
+
+### Authentication And Users
+
+`POST /api/v1/auth/token` accepts OAuth2 password form fields `username` (email) and `password`. `GET /api/v1/auth/me` returns the signed-in user. Admin-only `POST /api/v1/users`, `GET /api/v1/users`, and `PATCH /api/v1/users/{user_id}` manage reviewer/admin accounts and active status.
 
 ### Create And List Products
 
