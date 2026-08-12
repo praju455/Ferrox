@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Ferrox | Industrial Product Intelligence",
+  title: "Ferrox | Every Product Spec. Verified.",
   description:
-    "Ferrox converts industrial product PDFs, supplier pages, and catalog dumps into traceable, validated product records.",
+    "Industrial product intelligence that converts PDFs, supplier pages, and catalog dumps into traceable, validated product records.",
 };
 
 export default function RootLayout({

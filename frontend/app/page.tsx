@@ -4,340 +4,375 @@ import { useEffect, useMemo, useState } from "react";
 
 const defaultApiBase = "http://127.0.0.1:8000/api/v1";
 
-const workflowSteps = [
-  {
-    index: "01",
-    title: "Ingest every product source",
-    text: "Attach datasheets, supplier URLs, and pasted catalog text to the same product record.",
+const sourceData = {
+  PDF: {
+    title: "AXP-200 Technical Datasheet",
+    detail: "Manufacturer-issued - 14 pages",
+    fields: ["Flow rate 120 GPM", "Head 50 ft", "Power 5 HP", "Cast iron body"],
+    authority: "01 / highest authority",
   },
-  {
-    index: "02",
-    title: "Adapt schema by category",
-    text: "Pumps, bearings, motors, and fasteners get their own attribute contracts.",
+  URL: {
+    title: "Supplier product page",
+    detail: "Authorized distributor - scraped now",
+    fields: ["Flow rate 110 GPM", "Head 50 ft", "Power 5 HP", "Stainless steel body"],
+    authority: "03 / secondary source",
   },
-  {
-    index: "03",
-    title: "Extract with evidence",
-    text: "Every field carries value, unit, source, confidence, status, evidence, and alternatives.",
+  TEXT: {
+    title: "Legacy catalog export",
+    detail: "ERP snippet - imported today",
+    fields: ["Model AXP-200", "2 in NPT", "Power 5 HP", "60 Hz"],
+    authority: "02 / internal record",
   },
-  {
-    index: "04",
-    title: "Resolve conflicts clearly",
-    text: "Authority rules and LLM review expose mismatches instead of hiding them.",
-  },
+} as const;
+
+type SourceName = keyof typeof sourceData;
+
+const pipeline = [
+  ["01", "Ingest", "PDF, URL and text stay attached to one product."],
+  ["02", "Classify", "Category selects the right industrial schema."],
+  ["03", "Extract", "Every value keeps evidence and source lineage."],
+  ["04", "Reconcile", "Conflicts are surfaced and ranked by authority."],
+  ["05", "Validate", "Rules and semantic checks gate catalog readiness."],
 ];
 
 const reviewItems = [
-  ["AXP-200 Pump", "material conflict", "PDF datasheet beats supplier page"],
-  ["VM-10 Motor", "speed_rpm missing", "required field needs review"],
-  ["BR-6205 Bearing", "load rating mismatch", "semantic validation flagged"],
+  { product: "Aurora AXP-200", field: "body_material", issue: "Conflicting values", severity: "High" },
+  { product: "VoltEdge VM-10", field: "speed_rpm", issue: "Required value missing", severity: "Medium" },
+  { product: "Borex BR-6205", field: "load_rating", issue: "Unit mismatch", severity: "Medium" },
 ];
 
-const endpoints = [
-  "POST /products/ingest/text",
-  "POST /products/{id}/pipeline",
-  "GET /reviews",
-  "PATCH /products/{id}/fields/{name}",
-  "GET /batches/{id}",
-  "GET /health",
+const contract = [
+  ["POST", "/products/ingest/text", "Create a product from raw catalog evidence"],
+  ["POST", "/products/{id}/pipeline", "Run classification through validation"],
+  ["GET", "/reviews", "List conflicts and low-confidence fields"],
+  ["PATCH", "/products/{id}/fields/{name}", "Approve or correct a canonical value"],
 ];
 
 export default function Home() {
+  const [selectedSource, setSelectedSource] = useState<SourceName>("PDF");
+  const [selectedReview, setSelectedReview] = useState(0);
   const [apiBase, setApiBase] = useState(defaultApiBase);
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<"Not checked" | "Checking" | "Healthy" | "Offline">("Not checked");
-  const [toast, setToast] = useState("");
 
   useEffect(() => {
     setApiBase(localStorage.getItem("ferrox.ui.apiBase") || defaultApiBase);
     setApiKey(localStorage.getItem("ferrox.ui.apiKey") || "");
   }, []);
 
-  useEffect(() => {
-    if (!toast) {
-      return;
-    }
-    const timer = window.setTimeout(() => setToast(""), 3200);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
-  const healthLabel = useMemo(() => {
-    if (status === "Healthy") return "Backend online";
-    if (status === "Offline") return "Backend offline";
+  const activeSource = sourceData[selectedSource];
+  const activeReview = reviewItems[selectedReview];
+  const healthCopy = useMemo(() => {
+    if (status === "Healthy") return "API online";
+    if (status === "Offline") return "API offline";
     return status;
   }, [status]);
 
-  function saveApiBase(value: string) {
-    const normalized = value.replace(/\/$/, "");
-    setApiBase(normalized);
-    localStorage.setItem("ferrox.ui.apiBase", normalized);
-    setToast("API base saved.");
+  function updateApiBase(value: string) {
+    setApiBase(value);
+    localStorage.setItem("ferrox.ui.apiBase", value.replace(/\/$/, ""));
   }
 
-  function saveApiKey(value: string) {
+  function updateApiKey(value: string) {
     setApiKey(value);
     localStorage.setItem("ferrox.ui.apiKey", value);
-    setToast("Internal API key saved locally.");
   }
 
   async function checkHealth() {
     setStatus("Checking");
     try {
-      const response = await fetch(`${apiBase}/health`, {
+      const response = await fetch(`${apiBase.replace(/\/$/, "")}/health`, {
         headers: apiKey ? { "X-API-Key": apiKey } : undefined,
       });
-      if (!response.ok) {
-        throw new Error(`${response.status}`);
-      }
+      if (!response.ok) throw new Error(String(response.status));
       setStatus("Healthy");
-      setToast("Backend is reachable.");
     } catch {
       setStatus("Offline");
-      setToast("Backend is not reachable from this API base.");
     }
   }
 
   return (
     <>
       <header className="site-header">
-        <a className="brand" href="#home" aria-label="Ferrox home">
-          <span className="brand-mark">Fx</span>
-          <span>Ferrox</span>
+        <a className="brand" href="#top" aria-label="Ferrox home">
+          <span className="brand-mark">F/</span>
+          <span className="brand-word">Ferrox</span>
         </a>
         <nav className="top-nav" aria-label="Primary navigation">
-          <a href="#workflow">Workflow</a>
-          <a href="#validation">Validation</a>
+          <a href="#platform">Platform</a>
+          <a href="#evidence">Evidence</a>
           <a href="#review">Review</a>
-          <a href="#api">API</a>
+          <a href="#developers">Developers</a>
         </nav>
-        <a className="header-action" href="#demo">
-          Live check
+        <a className="header-cta" href="#connect">
+          Open workspace <span aria-hidden="true">&#8599;</span>
         </a>
       </header>
 
-      <main id="home">
-        <section className="hero-section">
-          <div className="hero-copy">
-            <div className="signal-line">
-              <span />
-              Industrial catalog data, verified at source
+      <main id="top">
+        <section className="hero" aria-labelledby="hero-title">
+          <div className="hero-media" aria-hidden="true" />
+          <div className="hero-shade" aria-hidden="true" />
+          <div className="hero-inner">
+            <div className="hero-copy">
+              <div className="system-label">
+                <span className="status-light" /> Industrial product intelligence
+              </div>
+              <h1 id="hero-title">Every product spec. Verified.</h1>
+              <p>
+                Ferrox turns scattered datasheets, supplier pages and catalog dumps into structured industrial
+                product records with evidence attached to every field.
+              </p>
+              <div className="hero-actions">
+                <a className="action-primary" href="#connect">
+                  Start an extraction <span aria-hidden="true">&#8594;</span>
+                </a>
+                <a className="action-secondary" href="#platform">
+                  See how it works
+                </a>
+              </div>
             </div>
-            <h1>Product data extraction for teams that cannot afford catalog errors.</h1>
+
+            <div className="hero-inspector" aria-label="Live product source inspector">
+              <div className="inspector-header">
+                <div>
+                  <span>PRODUCT RECORD</span>
+                  <strong>AXP-200 / Industrial Pump</strong>
+                </div>
+                <span className="live-state"><i /> PROCESSING</span>
+              </div>
+              <div className="source-tabs" role="tablist" aria-label="Product sources">
+                {(Object.keys(sourceData) as SourceName[]).map((source) => (
+                  <button
+                    aria-selected={selectedSource === source}
+                    className={selectedSource === source ? "active" : ""}
+                    key={source}
+                    onClick={() => setSelectedSource(source)}
+                    role="tab"
+                    type="button"
+                  >
+                    {source}
+                  </button>
+                ))}
+              </div>
+              <div className="source-summary">
+                <div className="file-icon" aria-hidden="true">{selectedSource.slice(0, 1)}</div>
+                <div>
+                  <strong>{activeSource.title}</strong>
+                  <span>{activeSource.detail}</span>
+                </div>
+              </div>
+              <div className="field-list">
+                {activeSource.fields.map((field, index) => (
+                  <div key={field}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <strong>{field}</strong>
+                    <i className={index === 0 && selectedSource === "URL" ? "conflict" : "verified"} />
+                  </div>
+                ))}
+              </div>
+              <div className="authority-row">
+                <span>SOURCE RANK</span>
+                <strong>{activeSource.authority}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="hero-proof" aria-label="Platform proof points">
+            <div><strong>03</strong><span>source types</span></div>
+            <div><strong>16</strong><span>seeded industrial products</span></div>
+            <div><strong>03</strong><span>LLM providers in failover</span></div>
+            <div><strong>100%</strong><span>field-level traceability</span></div>
+          </div>
+        </section>
+
+        <section className="category-rail" aria-label="Supported industrial categories">
+          <span>Built for</span>
+          <strong>Industrial pumps</strong>
+          <strong>Bearings</strong>
+          <strong>Electric motors</strong>
+          <strong>Fasteners</strong>
+          <strong>Technical catalogs</strong>
+        </section>
+
+        <section className="platform-section" id="platform">
+          <div className="section-intro">
+            <span className="section-index">01 / PLATFORM</span>
+            <h2>One evidence chain from source to catalog.</h2>
             <p>
-              Ferrox turns PDFs, supplier pages, and messy catalog snippets into structured product attributes
-              with source traceability, conflict handling, validation, enrichment, and review workflows.
+              Product teams can see what Ferrox found, where it found it, why a value won, and what still needs a
+              human decision.
             </p>
-            <div className="hero-actions">
-              <a className="primary-action" href="#demo">
-                Explore platform
-              </a>
-              <a className="secondary-action" href="#api">
-                See API contract
-              </a>
-            </div>
-            <div className="proof-strip" aria-label="Platform capabilities">
-              <div>
-                <strong>3 source types</strong>
-                <span>PDF, URL, raw text</span>
-              </div>
-              <div>
-                <strong>LLM failover</strong>
-                <span>Gemini, Groq, OpenAI</span>
-              </div>
-              <div>
-                <strong>Human review</strong>
-                <span>Conflicts never hidden</span>
-              </div>
-            </div>
           </div>
-
-          <div className="hero-visual" aria-label="Ferrox product intelligence preview">
-            <div className="scanner-top">
-              <span className="scanner-dot" />
-              <span>AXP-200 ingestion run</span>
-              <strong>Live</strong>
-            </div>
-            <div className="scanner-grid">
-              <article className="source-card pdf">
-                <span>PDF Datasheet</span>
-                <strong>Aurora AXP-200</strong>
-                <p>120 GPM - 50 ft head - 5 HP - cast iron</p>
-              </article>
-              <article className="source-card web">
-                <span>Supplier Page</span>
-                <strong>AXP-200 Pump</strong>
-                <p>110 GPM - stainless steel impeller</p>
-              </article>
-              <article className="source-card text">
-                <span>Catalog Dump</span>
-                <strong>Model AXP-200</strong>
-                <p>connection size 2 in NPT - 5 HP</p>
-              </article>
-            </div>
-            <div className="pipeline-card">
-              <div className="pipeline-node complete">Classify</div>
-              <div className="pipeline-node complete">Schema</div>
-              <div className="pipeline-node active">Extract</div>
-              <div className="pipeline-node warn">Reconcile</div>
-              <div className="pipeline-node">Validate</div>
-            </div>
-            <div className="result-card">
-              <div>
-                <span>Canonical value</span>
-                <strong>flow_rate: 120 GPM</strong>
-              </div>
-              <em>source: PDF datasheet - confidence 0.83</em>
-            </div>
-          </div>
-        </section>
-
-        <section className="logo-band" aria-label="Industrial categories">
-          <span>Industrial Pump</span>
-          <span>Bearing</span>
-          <span>Electric Motor</span>
-          <span>Fastener</span>
-          <span>Supplier Catalog</span>
-        </section>
-
-        <section className="section workflow-section" id="workflow">
-          <div className="section-heading">
-            <span className="eyebrow">Workflow</span>
-            <h2>From scattered source material to clean product records.</h2>
-          </div>
-          <div className="workflow-grid">
-            {workflowSteps.map((step) => (
-              <article key={step.index}>
-                <span className="step-index">{step.index}</span>
-                <h3>{step.title}</h3>
-                <p>{step.text}</p>
+          <div className="pipeline-table">
+            {pipeline.map(([number, title, copy], index) => (
+              <article key={number}>
+                <span>{number}</span>
+                <div className={`pipeline-symbol symbol-${index + 1}`} aria-hidden="true"><i /></div>
+                <h3>{title}</h3>
+                <p>{copy}</p>
               </article>
             ))}
           </div>
         </section>
 
-        <section className="split-section" id="validation">
-          <div className="validation-copy">
-            <span className="eyebrow">Validation</span>
-            <h2>Trust is built into the record, not added later.</h2>
+        <section className="evidence-section" id="evidence">
+          <div className="evidence-copy">
+            <span className="section-index light">02 / EVIDENCE</span>
+            <h2>Trust the record because you can inspect the proof.</h2>
             <p>
-              Deterministic rules, semantic LLM checks, grounded enrichment, confidence scoring, and completeness
-              scoring run before a product reaches catalog-ready status.
+              The canonical value is never a black box. Each decision includes its source, confidence, evidence,
+              competing values and validation outcome.
             </p>
-            <ul className="check-list">
-              <li>Strict JSON output contracts and retries</li>
-              <li>Source authority ranking for reconciliation</li>
-              <li>Review queue for low-confidence or missing fields</li>
-              <li>Batch processing with item-level failures</li>
-            </ul>
-          </div>
-          <div className="validation-panel">
-            <div className="score-ring">
-              <strong>92</strong>
-              <span>quality score</span>
+            <div className="validation-stats">
+              <div><strong>0.94</strong><span>record confidence</span></div>
+              <div><strong>86%</strong><span>schema complete</span></div>
+              <div><strong>2</strong><span>open conflicts</span></div>
             </div>
-            <div className="quality-list">
+          </div>
+
+          <div className="record-console" aria-label="Canonical product record example">
+            <div className="console-topbar">
+              <div><i /><i /><i /></div>
+              <span>ferrox / products / AXP-200</span>
+              <strong>CATALOG READY</strong>
+            </div>
+            <div className="record-head">
               <div>
-                <span>Schema completeness</span>
-                <strong>86%</strong>
+                <span>AURORA INDUSTRIAL</span>
+                <h3>End-Suction Pump AXP-200</h3>
+              </div>
+              <div className="record-score"><strong>94</strong><span>QUALITY</span></div>
+            </div>
+            <div className="record-grid">
+              <div className="record-labels">
+                <span>ATTRIBUTE</span><span>CANONICAL VALUE</span><span>CONFIDENCE</span><span>STATUS</span>
+              </div>
+              {[
+                ["flow_rate", "120 GPM", "0.96", "validated"],
+                ["head", "50 ft", "0.91", "validated"],
+                ["power_rating", "5 HP", "0.98", "validated"],
+                ["body_material", "cast iron", "0.78", "resolved"],
+                ["connection_size", "2 in NPT", "0.84", "extracted"],
+              ].map((field) => (
+                <div className="record-row" key={field[0]}>
+                  <code>{field[0]}</code><strong>{field[1]}</strong><span>{field[2]}</span><em>{field[3]}</em>
+                </div>
+              ))}
+            </div>
+            <div className="evidence-drawer">
+              <div>
+                <span>SELECTED EVIDENCE</span>
+                <strong>&ldquo;Rated capacity: 120 US GPM at 50 ft total dynamic head.&rdquo;</strong>
               </div>
               <div>
-                <span>Average confidence</span>
-                <strong>0.81</strong>
-              </div>
-              <div>
-                <span>Open conflicts</span>
-                <strong>2</strong>
-              </div>
-              <div>
-                <span>Evidence coverage</span>
-                <strong>3.1x</strong>
+                <span>SOURCE</span>
+                <strong>AXP-200-datasheet.pdf - page 4</strong>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="review-showcase" id="review">
-          <div className="section-heading">
-            <span className="eyebrow">Review queue</span>
-            <h2>Designed for fast human decisions.</h2>
+        <section className="review-section" id="review">
+          <div className="section-intro compact">
+            <span className="section-index">03 / REVIEW</span>
+            <h2>Human review, only where judgment matters.</h2>
           </div>
-          <div className="review-board">
-            <div className="review-list">
-              {reviewItems.map(([product, issue, detail], index) => (
-                <button className={`review-item ${index === 0 ? "selected" : ""}`} key={product} type="button">
-                  <strong>{product}</strong>
-                  <span>
-                    {issue} - {detail}
-                  </span>
+          <div className="review-workspace">
+            <div className="review-queue">
+              <div className="queue-heading"><span>OPEN REVIEWS</span><strong>23 items</strong></div>
+              {reviewItems.map((item, index) => (
+                <button
+                  className={selectedReview === index ? "active" : ""}
+                  key={item.product}
+                  onClick={() => setSelectedReview(index)}
+                  type="button"
+                >
+                  <span className={`severity ${item.severity.toLowerCase()}`}>{item.severity}</span>
+                  <strong>{item.product}</strong>
+                  <small>{item.field} - {item.issue}</small>
                 </button>
               ))}
             </div>
-            <div className="resolution-card">
-              <div className="card-header">
-                <span>Resolve material</span>
-                <strong>PDF wins by authority</strong>
+            <div className="review-detail">
+              <div className="detail-heading">
+                <div><span>REVIEWING</span><h3>{activeReview.product}</h3></div>
+                <strong>{activeReview.field}</strong>
               </div>
-              <div className="compare-row">
-                <div>
-                  <em>PDF datasheet</em>
+              <div className="comparison-grid">
+                <div className="candidate selected">
+                  <span>PDF DATASHEET - AUTHORITY 01</span>
                   <strong>cast iron</strong>
+                  <p>&ldquo;Casing material: ASTM A48 Class 30 cast iron.&rdquo;</p>
+                  <em>Recommended</em>
                 </div>
-                <div>
-                  <em>Supplier page</em>
+                <div className="candidate">
+                  <span>SUPPLIER PAGE - AUTHORITY 03</span>
                   <strong>stainless steel</strong>
+                  <p>&ldquo;Corrosion-resistant stainless construction.&rdquo;</p>
+                  <em>Alternative</em>
                 </div>
               </div>
-              <div className="decision-row">
-                <span>Reviewer action</span>
-                <strong>Validate cast iron and close review</strong>
+              <div className="review-decision">
+                <div><span>FERROX DECISION</span><strong>Datasheet value wins by source authority.</strong></div>
+                <button type="button">Approve &amp; close <span aria-hidden="true">&#8594;</span></button>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="api-section" id="api">
-          <div>
-            <span className="eyebrow">Backend-ready</span>
-            <h2>Built around the API already implemented in Ferrox.</h2>
-            <p>The landing page can evolve into the working product UI without changing the backend contract.</p>
+        <section className="developer-section" id="developers">
+          <div className="developer-copy">
+            <span className="section-index light">04 / DEVELOPERS</span>
+            <h2>A backend contract ready for the product UI.</h2>
+            <p>
+              FastAPI, PostgreSQL and a provider fallback chain from Gemini to Groq to OpenAI. Every write route can
+              be protected with an internal key, and every response carries a request ID.
+            </p>
           </div>
-          <div className="endpoint-grid">
-            {endpoints.map((endpoint) => (
-              <code key={endpoint}>{endpoint}</code>
+          <div className="contract-list">
+            {contract.map(([method, path, description]) => (
+              <div key={path}>
+                <span>{method}</span><code>{path}</code><p>{description}</p>
+              </div>
             ))}
           </div>
         </section>
 
-        <section className="demo-section" id="demo">
+        <section className="connect-section" id="connect">
           <div>
-            <span className="eyebrow">Live backend check</span>
-            <h2>Connect this Next.js landing page to your local Ferrox API.</h2>
+            <span className="section-index">LIVE CONNECTION</span>
+            <h2>Point Ferrox at your backend.</h2>
+            <p>Connection details stay in this browser only.</p>
           </div>
-          <div className="demo-card">
+          <div className="connection-form">
             <label>
-              API base
-              <input value={apiBase} onChange={(event) => saveApiBase(event.target.value)} />
+              <span>API BASE</span>
+              <input aria-label="API base" value={apiBase} onChange={(event) => updateApiBase(event.target.value)} />
             </label>
             <label>
-              Internal key
+              <span>INTERNAL KEY</span>
               <input
+                aria-label="Internal API key"
+                placeholder="Optional for local development"
                 type="password"
                 value={apiKey}
-                onChange={(event) => saveApiKey(event.target.value)}
-                placeholder="Optional X-API-Key"
+                onChange={(event) => updateApiKey(event.target.value)}
               />
             </label>
-            <button className="primary-action" onClick={checkHealth} type="button">
-              Check backend
-            </button>
-            <span className={`backend-pill ${status.toLowerCase().replace(" ", "-")}`}>{healthLabel}</span>
+            <button onClick={checkHealth} type="button">Check connection <span aria-hidden="true">&#8594;</span></button>
+            <div className={`connection-state ${status.toLowerCase().replace(" ", "-")}`}>
+              <i /> {healthCopy}
+            </div>
           </div>
         </section>
       </main>
 
-      <div className={`toast ${toast ? "visible" : ""}`} role="status" aria-live="polite">
-        {toast}
-      </div>
+      <footer>
+        <a className="brand footer-brand" href="#top"><span className="brand-mark">F/</span><span>Ferrox</span></a>
+        <p>Industrial product intelligence, verified at source.</p>
+        <span>BACKEND v0.2 - NEXT.JS</span>
+      </footer>
     </>
   );
 }

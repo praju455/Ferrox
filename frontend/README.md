@@ -1,18 +1,33 @@
-# Ferrox Product Intelligence UI
+# Ferrox Frontend
 
-This is the Next.js + TypeScript frontend direction for Ferrox. It starts with a high-impact landing page and a small live backend check, while keeping the API contract visible for the future product UI.
+The Ferrox frontend is a Next.js + TypeScript landing experience for the Industrial Product Intelligence Platform. It explains the product through the actual workflow: source ingestion, evidence-backed extraction, reconciliation, validation, human review, and the existing backend contract.
 
-## Why This Direction
+## Design Direction
 
-The downloaded UI catalog is used only as visual reference. The actual Ferrox frontend lives here and is pushed to the Ferrox repo. The direction borrows from strong SaaS/product-intelligence landing pages: dark technical atmosphere, sharp product mockups, clear proof points, and a visible backend contract.
+The local `front/` repository is used only as a design catalog. No catalog code or remote history is included in Ferrox, and nothing is pushed to the catalog repository.
 
-The page is designed to explain the platform before the fuller app is built:
+The current visual system combines the most relevant ideas from these catalog entries:
 
-- source ingestion across PDF, URL, and raw text
-- category-aware extraction schemas
-- explicit reconciliation for conflicts
-- validation, enrichment, confidence, completeness, and review queue
-- backend API readiness
+- `DFZ9GE6` - AI Factory: product-led hero composition and dark inspection surfaces.
+- `SD3TBY5` - Autonomous Data Dashboard: dense technical information and operational status language.
+- `U4FIIUM` - Interactive Database Schema: visible data relationships and system structure.
+- `7SZDVGF` - Audit Results Dashboard: evidence-first review patterns and clear issue hierarchy.
+
+The result is specific to Ferrox: graphite machinery photography, safety-orange action color, off-white catalog surfaces, source authority labels, field-level evidence, and a working review comparison. The original pump hero image was generated for this project and lives in `public/ferrox-industrial-pump.jpg`.
+
+## Experience Map
+
+```mermaid
+flowchart LR
+    Hero["Landing hero\nindustrial pump + live source inspector"] --> Platform["Platform workflow\ningest to validate"]
+    Platform --> Evidence["Canonical record\nconfidence + field evidence"]
+    Evidence --> Review["Human review\ncompare conflicting values"]
+    Review --> Contract["Developer contract\ncurrent backend endpoints"]
+    Contract --> Connect["Live connection check\nAPI base + optional internal key"]
+
+    Inspector["PDF / URL / text tabs"] --> Hero
+    Backend["FastAPI /api/v1/health"] --> Connect
+```
 
 ## Run
 
@@ -25,7 +40,7 @@ Open `http://127.0.0.1:3000`.
 
 ## Backend Contract
 
-The UI is wired to the current Ferrox API shape:
+The landing page uses the current Ferrox API shape:
 
 - `GET /api/v1/health`
 - `POST /api/v1/products/ingest/text`
@@ -34,4 +49,4 @@ The UI is wired to the current Ferrox API shape:
 - `GET /api/v1/batches`
 - `PATCH /api/v1/products/{product_id}/fields/{field_name}`
 
-If `INTERNAL_API_KEY` is configured on the backend, enter it in the UI's Internal key field.
+The connection check stores its API base and optional internal key in browser-local storage only.

@@ -4,6 +4,10 @@ Backend and frontend for the **Industrial Product Intelligence Platform**: a sys
 
 The backend lives in `app/`. The frontend landing page and future app shell live in `frontend/` as a Next.js + TypeScript project.
 
+## Frontend Direction
+
+The landing page now uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. It includes a generated centrifugal-pump hero image, an interactive PDF/URL/text source inspector, a full extraction pipeline, canonical record evidence, conflict review, the API contract, and a live backend health check. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
+
 ## Backend Status
 
 Implemented stages:
@@ -120,7 +124,12 @@ Production mode (`APP_ENV=production`) refuses to start without `INTERNAL_API_KE
 
 ```mermaid
 flowchart TD
-    UI["Next.js frontend\nlanding page + future catalog ops UI"] --> Guard["API safety layer\nCORS + trusted hosts + request ID + limits"]
+    UI["Next.js frontend\nindustrial landing page"] --> Inspector["Interactive source inspector\nPDF / URL / text"]
+    UI --> ReviewUI["Conflict review preview"]
+    UI --> HealthUI["Live backend health check"]
+    HealthUI --> Guard["API safety layer\nCORS + trusted hosts + request ID + limits"]
+    Inspector -. "frontend contract" .-> Guard
+    ReviewUI -. "frontend contract" .-> Guard
     Guard --> API["FastAPI backend"]
     API --> DB[("PostgreSQL")]
     Migration["Alembic migrations"] --> DB
