@@ -32,6 +32,8 @@ Implemented stages:
 18. Citation-backed Gemini Google Search enrichment that persists only grounded missing-field values and their source URLs.
 19. LLM run telemetry with provider fallback attempts, model/task latency, token usage, configurable cost estimates, and Prometheus metrics.
 20. User accounts with expiring JWT access tokens, Argon2 password hashing, reviewer/admin authorization, inactive-account enforcement, and service API-key compatibility.
+21. CI for unit tests, real PostgreSQL migrations/constraints, Next.js production builds, container builds, and manually triggered live Gemini/Groq/OpenAI integration tests.
+22. Container deployment with release migrations, API/worker separation, Prometheus monitoring, automated encrypted PostgreSQL dumps, retention pruning, and guarded restore tooling.
 
 ## Local Setup
 
@@ -128,6 +130,9 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API. |
 | `TRUSTED_HOSTS` | Comma-separated HTTP host allowlist. |
 | `WORKER_POLL_SECONDS` | Pipeline worker polling interval. Default: 2 seconds. |
+| `BACKUP_INTERVAL_SECONDS` | Delay between scheduled PostgreSQL dumps. Default: one day. |
+| `BACKUP_RETENTION_COUNT` | Number of newest object-store dumps retained. Default: 14. |
+| `BACKUP_PREFIX` | Private object key prefix for database dumps. |
 
 LLM calls are routed in `LLM_PROVIDER_ORDER`. Each provider is asked for JSON only, parsed defensively, validated against the task contract, retried on malformed output, and then falls through to the next provider if it still fails. If no live keys are configured, the deterministic mock provider keeps local tests and demos working without secrets.
 
@@ -209,6 +214,9 @@ flowchart TD
     Telemetry --> DB
     Telemetry --> Metrics["Prometheus metrics"]
     API --> Metrics
+    Prometheus["Prometheus scraper"] --> Metrics
+    Backup["Scheduled pg_dump\nretention pruning"] --> DB
+    Backup --> Objects
 
     API --> BatchQueue["Persistent batch queue\ntext / URL / base64 PDF payloads"]
     BatchQueue --> DB
@@ -368,6 +376,18 @@ Citation-backed enriched fields include nested `citations`, and product detail a
 ### Operations
 
 `GET /api/v1/health/live` is process liveness. `GET /api/v1/health/ready` checks database readiness. `GET /api/v1/metrics` exposes Prometheus metrics. `GET /api/v1/observability/llm-runs` returns persisted provider attempts and supports `product_id`, `provider`, and `task` filters.
+
+## CI And Deployment
+
+The default GitHub Actions workflow runs fast backend tests, applies the complete migration chain to PostgreSQL 16, verifies PostgreSQL tables and constraints, builds Next.js, and builds both production images. The manually triggered `Live LLM Integration` workflow requires all three provider secrets and makes billable classification calls without falling back to mock output.
+
+For a complete local production topology, set the required values and run:
+
+```bash
+docker compose -f docker-compose.production.yml up -d --build
+```
+
+This starts release migrations, API, worker, frontend, private PostgreSQL/MinIO, Prometheus, and the backup loop. Production hardening, alerts, secret handling, backup restore, and managed-service guidance are documented in `ops/DEPLOYMENT.md`.
 
 ### Delete Product
 

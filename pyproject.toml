@@ -31,6 +31,10 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "postgres: requires a migrated PostgreSQL test database",
+  "live_llm: makes billable calls to configured live LLM providers",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]

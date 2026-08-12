@@ -27,6 +27,8 @@ class ObjectStorage(Protocol):
 
     def delete(self, key: str) -> None: ...
 
+    def list_keys(self, prefix: str) -> list[str]: ...
+
     def presigned_get_url(self, key: str, expires_seconds: int = 900) -> str | None: ...
 
 
@@ -65,6 +67,12 @@ class LocalObjectStorage:
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        prefix_path = self._path(prefix)
+        if not prefix_path.exists():
+            return []
+        return sorted(str(path.relative_to(self.root)) for path in prefix_path.rglob("*") if path.is_file())
 
     def presigned_get_url(self, key: str, expires_seconds: int = 900) -> str | None:
         return None
@@ -110,6 +118,13 @@ class S3ObjectStorage:
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            keys.extend(item["Key"] for item in page.get("Contents", []))
+        return sorted(keys)
 
     def presigned_get_url(self, key: str, expires_seconds: int = 900) -> str:
         return self.client.generate_presigned_url(

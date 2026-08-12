@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
     trusted_hosts: str = "127.0.0.1,localhost,testserver"
     worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
+    backup_interval_seconds: int = Field(default=86_400, ge=300)
+    backup_retention_count: int = Field(default=14, ge=1, le=365)
+    backup_prefix: str = "backups/postgres"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
