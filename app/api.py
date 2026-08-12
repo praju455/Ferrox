@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db import get_db, init_db
+from app.db import get_db
 from app.models import BatchItem, BatchJob, Product
 from app.schemas import BatchCreateRequest, BatchRead, PipelineRunRequest, ProductDetail, ProductRead, TextIngestionRequest, UrlIngestionRequest
 from app.services.ingestion import IngestionService
@@ -10,6 +11,12 @@ from app.services.pipeline import ProductPipeline
 
 
 router = APIRouter()
+
+
+@router.get("/health")
+def health(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(text("SELECT 1"))
+    return {"status": "ok", "database": "ok"}
 
 
 @router.post("/products/ingest/text", response_model=ProductRead)
@@ -99,10 +106,6 @@ def create_batch(payload: BatchCreateRequest, db: Session = Depends(get_db)) -> 
 def create_app() -> FastAPI:
     app = FastAPI(title="Industrial Product Intelligence Platform API", version="0.1.0")
     app.include_router(router, prefix=get_settings().api_v1_prefix)
-
-    @app.on_event("startup")
-    def startup() -> None:
-        init_db()
 
     return app
 

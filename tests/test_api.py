@@ -1,3 +1,10 @@
+def test_health_endpoint(client):
+    response = client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "database": "ok"}
+
+
 def test_ingest_text_and_run_pipeline(client):
     response = client.post(
         "/api/v1/products/ingest/text",

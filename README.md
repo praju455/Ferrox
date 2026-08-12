@@ -18,6 +18,7 @@ Implemented stages:
 8. Confidence/completeness scoring and review queue creation.
 9. Batch ingestion and processing.
 10. Seed data for 16 industrial products with incomplete and conflicting source snippets.
+11. Alembic migration setup with an initial PostgreSQL schema migration.
 
 ## Local Setup
 
@@ -26,15 +27,29 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 cp .env.example .env
 docker compose up -d postgres
+.venv/bin/python -m alembic upgrade head
 .venv/bin/python -m uvicorn app.api:app --reload
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
 
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/health
+```
+
 To seed mock industrial products:
 
 ```bash
 .venv/bin/python -m app.seed
+```
+
+To create a future migration after model changes:
+
+```bash
+.venv/bin/python -m alembic revision --autogenerate -m "describe change"
+.venv/bin/python -m alembic upgrade head
 ```
 
 To run tests:
