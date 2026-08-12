@@ -1,5 +1,4 @@
 import logging
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -7,7 +6,7 @@ from pathlib import Path
 import requests
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
@@ -39,8 +38,9 @@ from app.schemas import (
     UrlIngestionRequest,
 )
 from app.services.ingestion import IngestionService
-from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_pipeline_job
+from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_batch_job, process_pipeline_job
 from app.services.pipeline import ProductPipeline
+from app.services.storage import build_object_storage
 
 
 router = APIRouter()
@@ -118,22 +118,17 @@ def extract_pdf_source(product_id: str, file: UploadFile) -> Source:
     if Path(file.filename or "").suffix.lower() != ".pdf":
         raise HTTPException(status_code=415, detail="Only PDF files are supported")
     settings = get_settings()
-    temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
-            temp_path = Path(handle.name)
-            total = 0
-            while chunk := file.file.read(1024 * 1024):
-                total += len(chunk)
-                if total > settings.max_pdf_upload_bytes:
-                    raise HTTPException(status_code=413, detail="PDF upload is too large")
-                handle.write(chunk)
-        source = IngestionService(settings).from_pdf(product_id, str(temp_path))
-        source.source_identifier = file.filename or "uploaded-datasheet.pdf"
-        return source
-    finally:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
+        content = file.file.read(settings.max_pdf_upload_bytes + 1)
+        if len(content) > settings.max_pdf_upload_bytes:
+            raise HTTPException(status_code=413, detail="PDF upload is too large")
+        return IngestionService(settings, build_object_storage(settings)).from_pdf_bytes(
+            product_id,
+            content,
+            file.filename or "uploaded-datasheet.pdf",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/products", response_model=ProductRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_internal_api_key)])
@@ -206,11 +201,32 @@ def get_product_source(product_id: str, source_id: str, db: Session = Depends(ge
     return source
 
 
+@router.get("/products/{product_id}/sources/{source_id}/content")
+def download_product_source(product_id: str, source_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
+    source = db.scalar(select(Source).where(Source.id == source_id, Source.product_id == product_id))
+    if not source or not source.storage_key:
+        raise HTTPException(status_code=404, detail="Stored source content not found")
+    stream = build_object_storage(get_settings()).open(source.storage_key)
+    filename = Path(source.source_identifier).name.replace('"', "")
+    return StreamingResponse(
+        stream,
+        media_type=source.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_internal_api_key)])
 def delete_product(product_id: str, db: Session = Depends(get_db)) -> Response:
     product = product_or_404(product_id, db)
+    storage_keys = [source.storage_key for source in product.sources if source.storage_key]
     db.delete(product)
     db.commit()
+    storage = build_object_storage(get_settings())
+    for storage_key in storage_keys:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            logger.exception("Failed to remove source object", extra={"storage_key": storage_key})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -406,22 +422,21 @@ def correct_field(product_id: str, field_name: str, payload: FieldCorrectionRequ
     return field
 
 
-@router.post("/batches", response_model=BatchRead, dependencies=[Depends(require_internal_api_key)])
+@router.post(
+    "/batches",
+    response_model=BatchRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_internal_api_key)],
+)
 def create_batch(payload: BatchCreateRequest, db: Session = Depends(get_db)) -> BatchJob:
-    batch = BatchJob(total_items=len(payload.items), status="running")
+    batch = BatchJob(total_items=len(payload.items), status="queued")
     db.add(batch)
     db.flush()
     for item in payload.items:
         product = Product(name=item.name)
         db.add(product)
         db.flush()
-        for source_in in item.sources:
-            if source_in.source_type != "text" or not source_in.raw_content:
-                continue
-            db.add(IngestionService(get_settings()).from_text(product.id, source_in.raw_content, source_in.source_identifier))
-        db.add(BatchItem(batch_id=batch.id, product_id=product.id, status="queued", payload=item.model_dump()))
-    db.flush()
-    process_batch_items(db, batch, include_failed=False)
+        db.add(BatchItem(batch_id=batch.id, product_id=product.id, status="queued", payload=item.model_dump(mode="json")))
     db.commit()
     db.refresh(batch)
     return batch
@@ -452,36 +467,7 @@ def process_batch(batch_id: str, payload: BatchProcessRequest | None = None, db:
     batch = db.get(BatchJob, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
-    process_batch_items(db, batch, include_failed=payload.include_failed if payload else True)
-    db.commit()
-    db.refresh(batch)
-    return batch
-
-
-def process_batch_items(db: Session, batch: BatchJob, include_failed: bool) -> None:
-    batch.status = "running"
-    batch.processed_items = 0
-    batch.failed_items = 0
-    eligible_statuses = {"queued", "failed"} if include_failed else {"queued"}
-    for item in batch.items:
-        if item.status not in eligible_statuses:
-            if item.status == "processed":
-                batch.processed_items += 1
-            elif item.status == "failed":
-                batch.failed_items += 1
-            continue
-        try:
-            if not item.product:
-                raise ValueError("Batch item has no product")
-            ProductPipeline(db).run(item.product)
-            item.status = "processed"
-            item.error = None
-            batch.processed_items += 1
-        except Exception as exc:
-            item.status = "failed"
-            item.error = str(exc)
-            batch.failed_items += 1
-    batch.status = "completed" if batch.failed_items == 0 else "completed_with_errors"
+    return process_batch_job(db, batch, include_failed=payload.include_failed if payload else True)
 
 
 def create_app() -> FastAPI:

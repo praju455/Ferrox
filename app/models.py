@@ -61,6 +61,11 @@ class Source(Base):
     source_identifier: Mapped[str] = mapped_column(String(500))
     raw_content: Mapped[str] = mapped_column(Text)
     extracted_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    storage_backend: Mapped[str | None] = mapped_column(String(20))
+    storage_key: Mapped[str | None] = mapped_column(String(1000), unique=True)
+    content_type: Mapped[str | None] = mapped_column(String(120))
+    content_length: Mapped[int | None] = mapped_column()
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
     authority_rank: Mapped[int] = mapped_column(default=3)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

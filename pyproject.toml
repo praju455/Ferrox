@@ -15,6 +15,7 @@ dependencies = [
   "requests>=2.32.0",
   "beautifulsoup4>=4.12.0",
   "PyMuPDF>=1.24.0",
+  "boto3>=1.35.0",
 ]
 
 [project.optional-dependencies]
@@ -27,3 +28,10 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]

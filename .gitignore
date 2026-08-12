@@ -12,3 +12,4 @@ build/
 front/
 frontend/.next/
 frontend/node_modules/
+.data/

@@ -27,6 +27,8 @@ Implemented stages:
 13. Product collection and source evidence APIs so PDF, URL, and text sources can share one product record.
 14. Selectable pipeline stages with retry-safe candidate extraction and idempotent review queue creation.
 15. Persistent pipeline jobs with queued/running/completed/failed states and a separate database-backed worker.
+16. Durable PDF storage through a local development backend or private S3-compatible storage, including MinIO, checksums, and download streaming.
+17. Truly asynchronous batch jobs with worker-side text, public URL, and base64 PDF ingestion plus retryable item failures.
 
 ## Local Setup
 
@@ -34,7 +36,7 @@ Implemented stages:
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 cp .env.example .env
-docker compose up -d postgres
+docker compose up -d postgres minio minio-init
 .venv/bin/python -m alembic upgrade head
 .venv/bin/python -m uvicorn app.api:app --reload
 ```
@@ -102,6 +104,11 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `MAX_SOURCE_CHARS` | Maximum retained source text per source. |
 | `MAX_REQUEST_BYTES` | Maximum accepted HTTP request size. Default: 25 MB. |
 | `MAX_PDF_UPLOAD_BYTES` | Maximum accepted PDF payload. Default: 20 MB. |
+| `OBJECT_STORAGE_BACKEND` | `local` for filesystem development or `s3` for S3/MinIO. |
+| `LOCAL_STORAGE_PATH` | Private local object directory used by the local backend. |
+| `S3_BUCKET` / `S3_ENDPOINT_URL` | S3 bucket and optional S3-compatible endpoint. |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | S3 credentials; leave unset to use the AWS credential chain. |
+| `S3_SERVER_SIDE_ENCRYPTION` | Server-side encryption mode used for stored PDFs. |
 | `CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API. |
 | `TRUSTED_HOSTS` | Comma-separated HTTP host allowlist. |
 | `WORKER_POLL_SECONDS` | Pipeline worker polling interval. Default: 2 seconds. |
@@ -148,6 +155,9 @@ flowchart TD
     Migration["Alembic migrations"] --> DB
     API --> Ingest["Ingestion service"]
     Ingest --> PDF["PDF parser\nPyMuPDF"]
+    PDF --> Objects[("Private object storage\nlocal / S3 / MinIO")]
+    Objects --> SourceMeta["Checksum + media metadata\nstorage key on Source"]
+    SourceMeta --> DB
     Ingest --> URL["URL scraper\nrequests + BeautifulSoup"]
     Ingest --> Text["Raw text parser"]
     Ingest --> Sources["Raw sources\nsource_id + product_id + authority rank"]
@@ -176,7 +186,10 @@ flowchart TD
     JSON --> OpenAI["OpenAI fallback"]
     LLM --> Mock["Mock local fallback"]
 
-    API --> Batch["Batch processor"]
+    API --> BatchQueue["Persistent batch queue\ntext / URL / base64 PDF payloads"]
+    BatchQueue --> DB
+    Worker --> BatchQueue
+    BatchQueue --> Batch["Worker-side source ingestion\nretryable per item"]
     Batch --> Pipeline
 ```
 
@@ -187,7 +200,7 @@ Core persisted entities:
 | Entity | Purpose |
 | --- | --- |
 | `Product` | Product record, category, dynamic schema, completeness, confidence. |
-| `Source` | Raw source content tied to `product_id`; stores type, identifier, parser metadata, authority rank. |
+| `Source` | Raw source content tied to `product_id`; stores type, identifier, parser metadata, authority rank, object key, size, media type, and SHA-256 checksum. |
 | `ExtractedField` | One canonical field per product field name; includes value, unit, confidence, status, source, evidence, alternatives, validation. |
 | `ReviewItem` | Human review queue for conflicts, low confidence, missing required fields, and validation issues. |
 | `BatchJob` / `BatchItem` | Batch processing state and item-level payload/errors. |
@@ -266,6 +279,8 @@ Product list responses include category, dynamic schema, confidence, completenes
 
 `GET /api/v1/products/{product_id}/sources/{source_id}` returns one source.
 
+`GET /api/v1/products/{product_id}/sources/{source_id}/content` streams the original stored PDF. Objects remain private; the API is the access boundary.
+
 ### Ingest Raw Text
 
 `POST /api/v1/products/ingest/text`
@@ -313,6 +328,10 @@ Both properties are optional. Stage subsets run in canonical pipeline order, and
 `GET /api/v1/products/{product_id}`
 
 The product detail response includes both `sources` and canonical `fields`.
+
+### Queue A Batch
+
+`POST /api/v1/batches` returns `202 Accepted`; the worker processes queued items asynchronously. Text uses `raw_content`, URL uses `url`, and PDF uses base64-encoded `content_base64`. `POST /api/v1/batches/{batch_id}/process` remains available for controlled retries and local testing.
 
 ### Delete Product
 

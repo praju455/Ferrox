@@ -1,4 +1,10 @@
+import base64
+
+import fitz
+
 from app.models import BatchItem, BatchJob, Product
+from app.models import SourceType
+from app.services.ingestion import IngestionService
 
 
 def test_batch_list_detail_and_item_payloads(client):
@@ -19,8 +25,12 @@ def test_batch_list_detail_and_item_payloads(client):
             ]
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     batch_id = response.json()["id"]
+    assert response.json()["status"] == "queued"
+
+    process_response = client.post(f"/api/v1/batches/{batch_id}/process")
+    assert process_response.status_code == 200
 
     list_response = client.get("/api/v1/batches", params={"status": "completed"})
     assert list_response.status_code == 200
@@ -59,3 +69,62 @@ def test_batch_process_retries_failed_items(client, db_session):
     assert body["processed_items"] == 1
     assert body["failed_items"] == 0
     assert body["items"][0]["error"] is None
+
+
+def test_async_batch_ingests_url_and_durable_pdf(client, monkeypatch):
+    def fake_from_url(self, product_id, url):
+        return self._source(
+            product_id,
+            SourceType.url,
+            url,
+            "ClearFlow CFP-44 pump supplier page with 42 GPM flow.",
+            {"parser": "test"},
+        )
+
+    monkeypatch.setattr(IngestionService, "from_url", fake_from_url)
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "ClearFlow CFP-44 datasheet. Flow 44 GPM. Head 28 ft. 1 HP.")
+    pdf_bytes = document.tobytes()
+    document.close()
+
+    response = client.post(
+        "/api/v1/batches",
+        json={
+            "items": [
+                {
+                    "name": "ClearFlow CFP-44",
+                    "sources": [
+                        {
+                            "source_type": "url",
+                            "source_identifier": "supplier-page",
+                            "url": "https://example.com/cfp-44",
+                        },
+                        {
+                            "source_type": "pdf",
+                            "source_identifier": "CFP-44.pdf",
+                            "content_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    assert response.status_code == 202
+    batch_id = response.json()["id"]
+
+    processed = client.post(f"/api/v1/batches/{batch_id}/process")
+    assert processed.status_code == 200
+    assert processed.json()["status"] == "completed"
+    product_id = processed.json()["items"][0]["product_id"]
+
+    sources = client.get(f"/api/v1/products/{product_id}/sources").json()
+    assert {source["source_type"] for source in sources} == {"url", "pdf"}
+    pdf_source = next(source for source in sources if source["source_type"] == "pdf")
+    assert pdf_source["storage_backend"] == "local"
+    assert pdf_source["content_length"] == len(pdf_bytes)
+    assert len(pdf_source["content_sha256"]) == 64
+
+    download = client.get(f"/api/v1/products/{product_id}/sources/{pdf_source['id']}/content")
+    assert download.status_code == 200
+    assert download.content == pdf_bytes

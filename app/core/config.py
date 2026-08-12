@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     max_source_chars: int = Field(default=120_000, ge=1_000)
     max_request_bytes: int = Field(default=25_000_000, ge=1_000_000)
     max_pdf_upload_bytes: int = Field(default=20_000_000, ge=1_000_000)
+    object_storage_backend: str = "local"
+    local_storage_path: str = ".data/objects"
+    s3_bucket: str = "ferrox-sources"
+    s3_endpoint_url: str | None = None
+    s3_region: str = "us-east-1"
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+    s3_force_path_style: bool = True
+    s3_server_side_encryption: str | None = "AES256"
     cors_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
     trusted_hosts: str = "127.0.0.1,localhost,testserver"
     worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)

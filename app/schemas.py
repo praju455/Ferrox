@@ -1,13 +1,25 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 
 class SourceIn(BaseModel):
     source_type: Literal["pdf", "url", "text"]
-    source_identifier: str
+    source_identifier: str = Field(min_length=1, max_length=500)
     raw_content: str | None = None
+    url: HttpUrl | None = None
+    content_base64: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source_payload(self) -> "SourceIn":
+        if self.source_type == "text" and not self.raw_content:
+            raise ValueError("Text sources require raw_content")
+        if self.source_type == "url" and self.url is None:
+            raise ValueError("URL sources require url")
+        if self.source_type == "pdf" and not self.content_base64:
+            raise ValueError("PDF sources require content_base64")
+        return self
 
 
 class ProductCreate(BaseModel):
@@ -59,6 +71,11 @@ class SourceRead(BaseModel):
     source_identifier: str
     raw_content: str
     extracted_metadata: dict[str, Any] | None
+    storage_backend: str | None
+    storage_key: str | None
+    content_type: str | None
+    content_length: int | None
+    content_sha256: str | None
     authority_rank: int
     created_at: datetime
 

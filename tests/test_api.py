@@ -42,5 +42,10 @@ def test_batch_processing_contract(client):
             ]
         },
     )
-    assert response.status_code == 200
-    assert response.json()["processed_items"] == 1
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    batch_id = response.json()["id"]
+
+    process_response = client.post(f"/api/v1/batches/{batch_id}/process")
+    assert process_response.status_code == 200
+    assert process_response.json()["processed_items"] == 1

@@ -1,6 +1,5 @@
 import ipaddress
 import socket
-from pathlib import Path
 from urllib.parse import urlparse
 
 import fitz
@@ -9,6 +8,7 @@ from bs4 import BeautifulSoup
 
 from app.core.config import Settings
 from app.models import Source, SourceType
+from app.services.storage import ObjectStorage, source_object_key
 
 
 def authority_rank(source_type: SourceType) -> int:
@@ -16,8 +16,9 @@ def authority_rank(source_type: SourceType) -> int:
 
 
 class IngestionService:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, storage: ObjectStorage | None = None):
         self.settings = settings
+        self.storage = storage
 
     def from_text(self, product_id: str, text: str, identifier: str) -> Source:
         return self._source(product_id, SourceType.text, identifier, text, {"parser": "plain-text"})
@@ -54,13 +55,31 @@ class IngestionService:
             if not ip.is_global:
                 raise ValueError("Private network URLs are not supported")
 
-    def from_pdf(self, product_id: str, pdf_path: str) -> Source:
-        path = Path(pdf_path)
+    def from_pdf_bytes(self, product_id: str, content: bytes, filename: str) -> Source:
+        if len(content) > self.settings.max_pdf_upload_bytes:
+            raise ValueError("PDF upload is too large")
+        if not content.startswith(b"%PDF"):
+            raise ValueError("Uploaded content is not a valid PDF")
         chunks: list[str] = []
-        with fitz.open(path) as doc:
+        with fitz.open(stream=content, filetype="pdf") as doc:
             for page in doc:
                 chunks.append(page.get_text("text"))
-        return self._source(product_id, SourceType.pdf, str(path), "\n".join(chunks), {"parser": "pymupdf"})
+        if self.storage is None:
+            raise RuntimeError("PDF ingestion requires object storage")
+        stored = self.storage.put_bytes(source_object_key(product_id, filename), content, "application/pdf")
+        source = self._source(
+            product_id,
+            SourceType.pdf,
+            filename,
+            "\n".join(chunks),
+            {"parser": "pymupdf", "pages": len(chunks)},
+        )
+        source.storage_backend = stored.backend
+        source.storage_key = stored.key
+        source.content_type = stored.content_type
+        source.content_length = stored.content_length
+        source.content_sha256 = stored.sha256
+        return source
 
     def _source(self, product_id: str, source_type: SourceType, identifier: str, text: str, metadata: dict) -> Source:
         return Source(
