@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     database_url: str = "postgresql+psycopg://ferrox:ferrox@localhost:5432/ferrox"
     test_database_url: str = "sqlite+pysqlite:///:memory:"
+    internal_api_key: str | None = None
     llm_provider_order: str = "gemini,groq,openai"
     gemini_api_key: str | None = None
     groq_api_key: str | None = None

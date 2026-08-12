@@ -66,6 +66,7 @@ All secrets are read from environment variables. Do not commit `.env`.
 | --- | --- |
 | `DATABASE_URL` | Primary PostgreSQL SQLAlchemy URL. |
 | `TEST_DATABASE_URL` | Test database URL; defaults to in-memory SQLite for fast tests. |
+| `INTERNAL_API_KEY` | Optional API key for mutating endpoints. Leave blank for local-only development. |
 | `LLM_PROVIDER_ORDER` | Comma-separated provider order. Default: `gemini,groq,openai`. |
 | `GEMINI_API_KEY` | Primary LLM provider key. |
 | `GROQ_API_KEY` | First fallback provider key. |
@@ -85,6 +86,18 @@ Provider behavior:
 | Gemini | `generateContent` with `responseMimeType: application/json`. |
 | Groq | OpenAI-compatible chat completions with `response_format: {"type": "json_object"}`. |
 | OpenAI | Chat completions with `response_format: {"type": "json_object"}`. |
+
+When `INTERNAL_API_KEY` is set, write/process endpoints require either:
+
+```text
+X-API-Key: your-key
+```
+
+or:
+
+```text
+Authorization: Bearer your-key
+```
 
 ## Architecture
 
@@ -165,6 +178,8 @@ Structured extracted fields use this exact output shape:
 ```
 
 ## API Contract
+
+Mutating endpoints are protected when `INTERNAL_API_KEY` is configured. Read endpoints and `/api/v1/health` stay open for basic checks.
 
 ### Ingest Raw Text
 
@@ -305,5 +320,5 @@ Processes queued items and, when `include_failed` is true, retries failed items.
 Latest local run:
 
 ```text
-16 passed
+20 passed
 ```

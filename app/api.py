@@ -3,6 +3,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.security import require_internal_api_key
 from app.db import get_db
 from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, Product, ReviewItem, ReviewStatus
 from app.schemas import (
@@ -33,7 +34,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
     return {"status": "ok", "database": "ok"}
 
 
-@router.post("/products/ingest/text", response_model=ProductRead)
+@router.post("/products/ingest/text", response_model=ProductRead, dependencies=[Depends(require_internal_api_key)])
 def ingest_text(payload: TextIngestionRequest, db: Session = Depends(get_db)) -> Product:
     product = Product(name=payload.product_name)
     db.add(product)
@@ -45,7 +46,7 @@ def ingest_text(payload: TextIngestionRequest, db: Session = Depends(get_db)) ->
     return product
 
 
-@router.post("/products/ingest/url", response_model=ProductRead)
+@router.post("/products/ingest/url", response_model=ProductRead, dependencies=[Depends(require_internal_api_key)])
 def ingest_url(payload: UrlIngestionRequest, db: Session = Depends(get_db)) -> Product:
     product = Product(name=payload.product_name)
     db.add(product)
@@ -57,7 +58,7 @@ def ingest_url(payload: UrlIngestionRequest, db: Session = Depends(get_db)) -> P
     return product
 
 
-@router.post("/products/{product_id}/ingest/pdf", response_model=ProductRead)
+@router.post("/products/{product_id}/ingest/pdf", response_model=ProductRead, dependencies=[Depends(require_internal_api_key)])
 def ingest_pdf(product_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)) -> Product:
     product = db.get(Product, product_id)
     if not product:
@@ -71,7 +72,7 @@ def ingest_pdf(product_id: str, file: UploadFile = File(...), db: Session = Depe
     return product
 
 
-@router.post("/products/{product_id}/pipeline", response_model=ProductDetail)
+@router.post("/products/{product_id}/pipeline", response_model=ProductDetail, dependencies=[Depends(require_internal_api_key)])
 def run_pipeline(product_id: str, payload: PipelineRunRequest | None = None, db: Session = Depends(get_db)) -> Product:
     product = db.get(Product, product_id)
     if not product:
@@ -113,7 +114,7 @@ def get_review(review_id: str, db: Session = Depends(get_db)) -> ReviewItem:
     return review
 
 
-@router.patch("/reviews/{review_id}", response_model=ReviewItemRead)
+@router.patch("/reviews/{review_id}", response_model=ReviewItemRead, dependencies=[Depends(require_internal_api_key)])
 def update_review(review_id: str, payload: ReviewItemUpdate, db: Session = Depends(get_db)) -> ReviewItem:
     review = db.get(ReviewItem, review_id)
     if not review:
@@ -128,7 +129,7 @@ def update_review(review_id: str, payload: ReviewItemUpdate, db: Session = Depen
     return review
 
 
-@router.patch("/products/{product_id}/fields/{field_name}", response_model=ExtractedFieldRead)
+@router.patch("/products/{product_id}/fields/{field_name}", response_model=ExtractedFieldRead, dependencies=[Depends(require_internal_api_key)])
 def correct_field(product_id: str, field_name: str, payload: FieldCorrectionRequest, db: Session = Depends(get_db)) -> ExtractedField:
     product = db.get(Product, product_id)
     if not product:
@@ -171,7 +172,7 @@ def correct_field(product_id: str, field_name: str, payload: FieldCorrectionRequ
     return field
 
 
-@router.post("/batches", response_model=BatchRead)
+@router.post("/batches", response_model=BatchRead, dependencies=[Depends(require_internal_api_key)])
 def create_batch(payload: BatchCreateRequest, db: Session = Depends(get_db)) -> BatchJob:
     batch = BatchJob(total_items=len(payload.items), status="running")
     db.add(batch)
@@ -212,7 +213,7 @@ def get_batch(batch_id: str, db: Session = Depends(get_db)) -> BatchJob:
     return batch
 
 
-@router.post("/batches/{batch_id}/process", response_model=BatchDetail)
+@router.post("/batches/{batch_id}/process", response_model=BatchDetail, dependencies=[Depends(require_internal_api_key)])
 def process_batch(batch_id: str, payload: BatchProcessRequest | None = None, db: Session = Depends(get_db)) -> BatchJob:
     batch = db.get(BatchJob, batch_id)
     if not batch:
