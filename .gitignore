@@ -10,3 +10,5 @@ build/
 *.egg-info/
 .DS_Store
 front/
+frontend/.next/
+frontend/node_modules/

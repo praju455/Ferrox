@@ -19,6 +19,7 @@ Implemented stages:
 9. Batch ingestion and processing.
 10. Seed data for 16 industrial products with incomplete and conflicting source snippets.
 11. Alembic migration setup with an initial PostgreSQL schema migration.
+12. API hardening with production API-key enforcement, CORS allowlisting, trusted hosts, request IDs, body/upload limits, security headers, and private-network URL blocking.
 
 ## Local Setup
 
@@ -86,6 +87,10 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `OPENAI_MODEL` | OpenAI chat model name. Default: `gpt-4o-mini`. |
 | `SCRAPER_TIMEOUT_SECONDS` | URL scrape timeout. |
 | `MAX_SOURCE_CHARS` | Maximum retained source text per source. |
+| `MAX_REQUEST_BYTES` | Maximum accepted HTTP request size. Default: 25 MB. |
+| `MAX_PDF_UPLOAD_BYTES` | Maximum accepted PDF payload. Default: 20 MB. |
+| `CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API. |
+| `TRUSTED_HOSTS` | Comma-separated HTTP host allowlist. |
 
 LLM calls are routed in `LLM_PROVIDER_ORDER`. Each provider is asked for JSON only, parsed defensively, validated against the task contract, retried on malformed output, and then falls through to the next provider if it still fails. If no live keys are configured, the deterministic mock provider keeps local tests and demos working without secrets.
 
@@ -109,12 +114,16 @@ or:
 Authorization: Bearer your-key
 ```
 
+Production mode (`APP_ENV=production`) refuses to start without `INTERNAL_API_KEY`. Every response includes `X-Request-ID`, and clients may send their own request ID for end-to-end tracing.
+
 ## Architecture
 
 ```mermaid
 flowchart TD
-    UI["Next.js frontend\nlanding page + future catalog ops UI"] --> API["FastAPI backend"]
+    UI["Next.js frontend\nlanding page + future catalog ops UI"] --> Guard["API safety layer\nCORS + trusted hosts + request ID + limits"]
+    Guard --> API["FastAPI backend"]
     API --> DB[("PostgreSQL")]
+    Migration["Alembic migrations"] --> DB
     API --> Ingest["Ingestion service"]
     Ingest --> PDF["PDF parser\nPyMuPDF"]
     Ingest --> URL["URL scraper\nrequests + BeautifulSoup"]

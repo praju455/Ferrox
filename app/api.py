@@ -1,4 +1,16 @@
+import logging
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+import requests
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.requests import Request
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -26,6 +38,52 @@ from app.services.pipeline import ProductPipeline
 
 
 router = APIRouter()
+logger = logging.getLogger("ferrox.api")
+
+
+class RequestSafetyMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: FastAPI, max_request_bytes: int):
+        super().__init__(app)
+        self.max_request_bytes = max_request_bytes
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        content_length = request.headers.get("content-length")
+        try:
+            request_size = int(content_length) if content_length else 0
+        except ValueError:
+            request_size = self.max_request_bytes + 1
+        if request_size > self.max_request_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body is too large", "request_id": request_id},
+                headers={"X-Request-ID": request_id},
+            )
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("Unhandled request error", extra={"request_id": request_id, "path": request.url.path})
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error", "request_id": request_id},
+                headers={"X-Request-ID": request_id},
+            )
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        logger.info(
+            "Request completed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
+        return response
 
 
 @router.get("/health")
@@ -51,7 +109,12 @@ def ingest_url(payload: UrlIngestionRequest, db: Session = Depends(get_db)) -> P
     product = Product(name=payload.product_name)
     db.add(product)
     db.flush()
-    source = IngestionService(get_settings()).from_url(product.id, str(payload.url))
+    try:
+        source = IngestionService(get_settings()).from_url(product.id, str(payload.url))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Source URL could not be fetched") from exc
     db.add(source)
     db.commit()
     db.refresh(product)
@@ -63,10 +126,25 @@ def ingest_pdf(product_id: str, file: UploadFile = File(...), db: Session = Depe
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    path = f"/tmp/{product_id}-{file.filename}"
-    with open(path, "wb") as handle:
-        handle.write(file.file.read())
-    db.add(IngestionService(get_settings()).from_pdf(product.id, path))
+    if Path(file.filename or "").suffix.lower() != ".pdf":
+        raise HTTPException(status_code=415, detail="Only PDF files are supported")
+    settings = get_settings()
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+            temp_path = Path(handle.name)
+            total = 0
+            while chunk := file.file.read(1024 * 1024):
+                total += len(chunk)
+                if total > settings.max_pdf_upload_bytes:
+                    raise HTTPException(status_code=413, detail="PDF upload is too large")
+                handle.write(chunk)
+        source = IngestionService(settings).from_pdf(product.id, str(temp_path))
+        source.source_identifier = file.filename or "uploaded-datasheet.pdf"
+        db.add(source)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
     db.commit()
     db.refresh(product)
     return product
@@ -251,8 +329,23 @@ def process_batch_items(db: Session, batch: BatchJob, include_failed: bool) -> N
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Industrial Product Intelligence Platform API", version="0.1.0")
-    app.include_router(router, prefix=get_settings().api_v1_prefix)
+    settings = get_settings()
+    if settings.is_production and not settings.internal_api_key:
+        raise RuntimeError("INTERNAL_API_KEY must be configured in production")
+    app = FastAPI(title="Industrial Product Intelligence Platform API", version="0.2.0")
+    app.add_middleware(RequestSafetyMiddleware, max_request_bytes=settings.max_request_bytes)
+    if settings.allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    if settings.allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.allowed_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
+            expose_headers=["X-Request-ID"],
+        )
+    app.include_router(router, prefix=settings.api_v1_prefix)
 
     return app
 

@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
+
 from app.db import Base
 
 
@@ -15,3 +18,15 @@ def test_alembic_environment_uses_app_database_url():
 
     assert "get_settings().database_url" in env
     assert "target_metadata = Base.metadata" in env
+
+
+def test_initial_migration_upgrades_and_downgrades_sqlite(tmp_path, monkeypatch):
+    database_path = tmp_path / "migration.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    command.downgrade(config, "base")
+    get_settings.cache_clear()
