@@ -92,6 +92,7 @@ class ExtractedFieldRead(BaseModel):
     evidence: str | None
     alternatives: list[dict[str, Any]] | None
     validation: dict[str, Any] | None
+    citations: list["CitationRead"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -99,6 +100,37 @@ class ExtractedFieldRead(BaseModel):
 class ProductDetail(ProductRead):
     sources: list[SourceRead] = Field(default_factory=list)
     fields: list[ExtractedFieldRead] = Field(default_factory=list)
+    citations: list["CitationRead"] = Field(default_factory=list)
+
+
+class CitationRead(BaseModel):
+    id: str
+    product_id: str
+    extracted_field_id: str
+    url: str
+    title: str | None
+    cited_text: str | None
+    provider: str
+    retrieved_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class LLMRunRead(BaseModel):
+    id: str
+    product_id: str | None
+    provider: str
+    model: str
+    task: str
+    status: str
+    latency_ms: int
+    input_tokens: int
+    output_tokens: int
+    estimated_cost_usd: float
+    error: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class PipelineRunRequest(BaseModel):

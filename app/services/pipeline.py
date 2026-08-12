@@ -6,17 +6,27 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.models import ExtractedField, FieldStatus, Product, ReviewItem, Source
+from app.models import Citation, ExtractedField, FieldStatus, Product, ReviewItem, Source
 from app.services.catalog_schemas import schema_for_category
+from app.services.enrichment import GeminiGroundedEnrichment
 from app.services.llm import LLMClient, LLMRequest
+from app.services.observability import SQLAlchemyLLMObserver
 
 
 class ProductPipeline:
     STAGES = ("classify", "extract", "reconcile", "validate", "enrich", "score")
 
-    def __init__(self, db: Session, llm: LLMClient | None = None):
+    def __init__(
+        self,
+        db: Session,
+        llm: LLMClient | None = None,
+        enrichment: GeminiGroundedEnrichment | None = None,
+    ):
         self.db = db
-        self.llm = llm or LLMClient(get_settings())
+        settings = get_settings()
+        observer = SQLAlchemyLLMObserver(db, settings)
+        self.llm = llm or LLMClient(settings, observer=observer)
+        self.enrichment = enrichment or GeminiGroundedEnrichment(settings, observer=observer)
 
     def run(
         self,
@@ -24,6 +34,8 @@ class ProductPipeline:
         source_ids: list[str] | None = None,
         stages: list[str] | None = None,
     ) -> Product:
+        if hasattr(self.llm, "set_product_id"):
+            self.llm.set_product_id(product.id)
         sources = [source for source in product.sources if source_ids is None or source.id in source_ids]
         selected = set(stages or self.STAGES)
         if "classify" in selected and sources:
@@ -134,21 +146,61 @@ class ProductPipeline:
             )
 
     def enrich(self, product: Product) -> None:
-        result = self.llm.complete_json(LLMRequest(task="enrich", prompt=f"{product.category} {product.name}"))
-        for name, payload in result.get("enriched_fields", {}).items():
-            if not any(field.field_name == name for field in product.fields):
-                self.db.add(ExtractedField(
+        if not self.enrichment.enabled:
+            return
+        required = set((product.dynamic_schema or {}).get("required", []))
+        existing = {field.field_name for field in product.fields if field.value not in (None, "")}
+        for name in sorted(required - existing):
+            try:
+                result = self.enrichment.enrich_field(
+                    product.id,
+                    product.name,
+                    product.category or "Unknown",
+                    name,
+                )
+            except Exception as exc:
+                self._ensure_open_review(
+                    product,
+                    name,
+                    reason="Grounded enrichment failed",
+                    severity="medium",
+                    payload={"error": str(exc)[:500]},
+                )
+                continue
+            if result is None:
+                self._ensure_open_review(
+                    product,
+                    name,
+                    reason="No citation-backed enrichment found",
+                    severity="medium",
+                    payload={},
+                )
+                continue
+            field = ExtractedField(
                     product_id=product.id,
                     source_id=None,
                     field_name=name,
-                    value=payload.get("value"),
-                    unit=payload.get("unit"),
-                    confidence=float(payload.get("confidence") or 0.4),
+                    value=result.value,
+                    unit=result.unit,
+                    confidence=result.confidence,
                     status=FieldStatus.enriched,
-                    evidence=payload.get("evidence"),
+                    evidence=result.evidence,
                     alternatives=[],
-                    validation={"enrichment_note": payload.get("note")},
-                ))
+                    validation={"grounded": True, "citation_count": len(result.citations)},
+                )
+            self.db.add(field)
+            self.db.flush()
+            for citation in result.citations:
+                self.db.add(
+                    Citation(
+                        product_id=product.id,
+                        extracted_field_id=field.id,
+                        url=citation.url,
+                        title=citation.title,
+                        cited_text=citation.cited_text,
+                        provider="gemini",
+                    )
+                )
 
     def score_and_queue(self, product: Product) -> None:
         required = (product.dynamic_schema or {}).get("required", [])

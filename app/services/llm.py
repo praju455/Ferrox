@@ -1,6 +1,8 @@
 import abc
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,6 +10,10 @@ import requests
 
 from app.core.config import Settings
 from app.services.catalog_schemas import schema_for_category
+from app.services.observability import LLMCallEvent, LLMObserver
+
+
+logger = logging.getLogger("ferrox.llm")
 
 
 class LLMError(RuntimeError):
@@ -38,11 +44,13 @@ class BaseHTTPJSONProvider(LLMProvider):
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
     def complete_json(self, request: LLMRequest) -> dict[str, Any]:
         if not self.api_key:
             raise LLMError(f"{self.name} API key is not configured")
         prompt = self._json_prompt(request)
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -94,6 +102,11 @@ class GeminiProvider(BaseHTTPJSONProvider):
         )
         response.raise_for_status()
         data = response.json()
+        usage = data.get("usageMetadata", {})
+        self.last_usage = {
+            "input_tokens": int(usage.get("promptTokenCount", 0) or 0),
+            "output_tokens": int(usage.get("candidatesTokenCount", 0) or 0),
+        }
         parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
         text = "".join(part.get("text", "") for part in parts)
         if not text:
@@ -125,6 +138,11 @@ class OpenAICompatibleProvider(BaseHTTPJSONProvider):
         )
         response.raise_for_status()
         data = response.json()
+        usage = data.get("usage", {})
+        self.last_usage = {
+            "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "output_tokens": int(usage.get("completion_tokens", 0) or 0),
+        }
         content = data.get("choices", [{}])[0].get("message", {}).get("content")
         if not content:
             raise LLMError(f"{self.name} response did not include message content")
@@ -133,6 +151,8 @@ class OpenAICompatibleProvider(BaseHTTPJSONProvider):
 
 class MockIndustrialProvider(LLMProvider):
     name = "mock"
+    model = "deterministic-local"
+    last_usage = {"input_tokens": 0, "output_tokens": 0}
 
     def complete_json(self, request: LLMRequest) -> dict[str, Any]:
         text = request.prompt.lower()
@@ -210,7 +230,7 @@ class MockIndustrialProvider(LLMProvider):
 
 
 class LLMClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, observer: LLMObserver | None = None):
         providers = {
             "gemini": GeminiProvider(settings.gemini_api_key, settings.gemini_model, settings.llm_timeout_seconds),
             "groq": OpenAICompatibleProvider(
@@ -231,15 +251,52 @@ class LLMClient:
         }
         self.providers = [providers[name] for name in settings.provider_order if name in providers]
         self.providers.append(providers["mock"])
+        self.observer = observer
+        self.product_id: str | None = None
+
+    def set_product_id(self, product_id: str | None) -> None:
+        self.product_id = product_id
 
     def complete_json(self, request: LLMRequest) -> dict[str, Any]:
         last_error: Exception | None = None
         for provider in self.providers:
+            started = time.perf_counter()
             try:
-                return provider.complete_json(request)
+                result = provider.complete_json(request)
+                self._record(provider, request.task, "success", started)
+                return result
             except Exception as exc:
                 last_error = exc
+                self._record(provider, request.task, "error", started, exc)
         raise LLMError(str(last_error) if last_error else "No LLM providers configured")
+
+    def _record(
+        self,
+        provider: LLMProvider,
+        task: str,
+        status: str,
+        started: float,
+        error: Exception | None = None,
+    ) -> None:
+        if self.observer is None:
+            return
+        usage = getattr(provider, "last_usage", {})
+        try:
+            self.observer.record(
+                LLMCallEvent(
+                    provider=provider.name,
+                    model=getattr(provider, "model", "unknown"),
+                    task=task,
+                    status=status,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                    input_tokens=int(usage.get("input_tokens", 0) or 0),
+                    output_tokens=int(usage.get("output_tokens", 0) or 0),
+                    error=str(error) if error else None,
+                    product_id=self.product_id,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to record LLM telemetry")
 
 
 def parse_json_object(content: str) -> dict[str, Any]:

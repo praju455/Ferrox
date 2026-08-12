@@ -29,6 +29,8 @@ Implemented stages:
 15. Persistent pipeline jobs with queued/running/completed/failed states and a separate database-backed worker.
 16. Durable PDF storage through a local development backend or private S3-compatible storage, including MinIO, checksums, and download streaming.
 17. Truly asynchronous batch jobs with worker-side text, public URL, and base64 PDF ingestion plus retryable item failures.
+18. Citation-backed Gemini Google Search enrichment that persists only grounded missing-field values and their source URLs.
+19. LLM run telemetry with provider fallback attempts, model/task latency, token usage, configurable cost estimates, and Prometheus metrics.
 
 ## Local Setup
 
@@ -100,6 +102,9 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `GEMINI_MODEL` | Gemini model name. Default: `gemini-2.5-flash`. |
 | `GROQ_MODEL` | Groq chat model name. Default: `llama-3.3-70b-versatile`. |
 | `OPENAI_MODEL` | OpenAI chat model name. Default: `gpt-4o-mini`. |
+| `ENABLE_GROUNDED_ENRICHMENT` | Enables live Google Search grounding for missing required fields. |
+| `GEMINI_GROUNDING_MODEL` | Gemini model used with the Google Search tool. |
+| `*_INPUT_COST_PER_MILLION` / `*_OUTPUT_COST_PER_MILLION` | Deployment-owned price inputs used for estimated cost telemetry. |
 | `SCRAPER_TIMEOUT_SECONDS` | URL scrape timeout. |
 | `MAX_SOURCE_CHARS` | Maximum retained source text per source. |
 | `MAX_REQUEST_BYTES` | Maximum accepted HTTP request size. Default: 25 MB. |
@@ -173,7 +178,9 @@ flowchart TD
     Schemas --> Extract["Structured extraction\nvalue + confidence + source + status + evidence"]
     Extract --> Reconcile["Multi-source reconciliation\nconflict_resolved + alternatives"]
     Reconcile --> Validate["Rule + semantic validation"]
-    Validate --> Enrich["Grounded enrichment hook"]
+    Validate --> Enrich["Gemini Google Search grounding\none missing field per cited query"]
+    Enrich --> Citations["Citation records\nURL + title + cited text"]
+    Citations --> DB
     Enrich --> Score["Confidence + completeness scoring"]
     Score --> Review["Review queue"]
     Score --> DB
@@ -185,6 +192,10 @@ flowchart TD
     JSON --> Groq["Groq fallback"]
     JSON --> OpenAI["OpenAI fallback"]
     LLM --> Mock["Mock local fallback"]
+    LLM --> Telemetry["LLM run telemetry\nlatency + tokens + configured cost"]
+    Telemetry --> DB
+    Telemetry --> Metrics["Prometheus metrics"]
+    API --> Metrics
 
     API --> BatchQueue["Persistent batch queue\ntext / URL / base64 PDF payloads"]
     BatchQueue --> DB
@@ -205,6 +216,8 @@ Core persisted entities:
 | `ReviewItem` | Human review queue for conflicts, low confidence, missing required fields, and validation issues. |
 | `BatchJob` / `BatchItem` | Batch processing state and item-level payload/errors. |
 | `PipelineJob` | Durable product pipeline request with selected sources/stages, lifecycle timestamps, and retryable failure state. |
+| `Citation` | URL, title, and cited response span supporting one grounded enriched field. |
+| `LLMRun` | Provider attempt status, model/task, latency, token usage, estimated cost, and error context. |
 
 Structured extracted fields use this exact output shape:
 
@@ -328,10 +341,15 @@ Both properties are optional. Stage subsets run in canonical pipeline order, and
 `GET /api/v1/products/{product_id}`
 
 The product detail response includes both `sources` and canonical `fields`.
+Citation-backed enriched fields include nested `citations`, and product detail also exposes the complete citation collection.
 
 ### Queue A Batch
 
 `POST /api/v1/batches` returns `202 Accepted`; the worker processes queued items asynchronously. Text uses `raw_content`, URL uses `url`, and PDF uses base64-encoded `content_base64`. `POST /api/v1/batches/{batch_id}/process` remains available for controlled retries and local testing.
+
+### Operations
+
+`GET /api/v1/health/live` is process liveness. `GET /api/v1/health/ready` checks database readiness. `GET /api/v1/metrics` exposes Prometheus metrics. `GET /api/v1/observability/llm-runs` returns persisted provider attempts and supports `product_id`, `provider`, and `task` filters.
 
 ### Delete Product
 

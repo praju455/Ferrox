@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.security import require_internal_api_key
 from app.db import get_db
-from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, PipelineJob, Product, ReviewItem, ReviewStatus, Source
+from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, LLMRun, PipelineJob, Product, ReviewItem, ReviewStatus, Source
 from app.schemas import (
     BatchCreateRequest,
     BatchDetail,
@@ -24,6 +24,7 @@ from app.schemas import (
     BatchRead,
     ExtractedFieldRead,
     FieldCorrectionRequest,
+    LLMRunRead,
     PipelineRunRequest,
     PipelineJobRead,
     ProductCreateRequest,
@@ -40,6 +41,7 @@ from app.schemas import (
 from app.services.ingestion import IngestionService
 from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_batch_job, process_pipeline_job
 from app.services.pipeline import ProductPipeline
+from app.services.observability import HTTP_LATENCY, HTTP_REQUESTS, METRICS_CONTENT_TYPE, metrics_payload
 from app.services.storage import build_object_storage
 
 
@@ -79,6 +81,11 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        duration_seconds = time.perf_counter() - started
+        HTTP_REQUESTS.labels(request.method, route_path, str(response.status_code)).inc()
+        HTTP_LATENCY.labels(request.method, route_path).observe(duration_seconds)
         logger.info(
             "Request completed",
             extra={
@@ -86,7 +93,7 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
                 "method": request.method,
                 "path": request.url.path,
                 "status_code": response.status_code,
-                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "duration_ms": round(duration_seconds * 1000, 2),
             },
         )
         return response
@@ -96,6 +103,22 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
 def health(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok", "database": "ok"}
+
+
+@router.get("/health/live")
+def liveness() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/health/ready")
+def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(text("SELECT 1"))
+    return {"status": "ready", "database": "ok"}
+
+
+@router.get("/metrics", include_in_schema=False)
+def metrics() -> Response:
+    return Response(metrics_payload(), media_type=METRICS_CONTENT_TYPE)
 
 
 def product_or_404(product_id: str, db: Session) -> Product:
@@ -317,6 +340,28 @@ def get_pipeline_job(job_id: str, db: Session = Depends(get_db)) -> PipelineJob:
     if not job:
         raise HTTPException(status_code=404, detail="Pipeline job not found")
     return job
+
+
+@router.get(
+    "/observability/llm-runs",
+    response_model=list[LLMRunRead],
+    dependencies=[Depends(require_internal_api_key)],
+)
+def list_llm_runs(
+    product_id: str | None = Query(default=None),
+    provider: str | None = Query(default=None),
+    task: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[LLMRun]:
+    query = select(LLMRun)
+    if product_id:
+        query = query.where(LLMRun.product_id == product_id)
+    if provider:
+        query = query.where(LLMRun.provider == provider)
+    if task:
+        query = query.where(LLMRun.task == task)
+    return list(db.scalars(query.order_by(LLMRun.created_at.desc()).limit(limit)))
 
 
 @router.post(

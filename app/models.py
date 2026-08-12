@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -50,6 +50,7 @@ class Product(Base):
     reviews: Mapped[list["ReviewItem"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     batch_items: Mapped[list["BatchItem"]] = relationship(back_populates="product")
     pipeline_jobs: Mapped[list["PipelineJob"]] = relationship(back_populates="product", cascade="all, delete-orphan")
+    citations: Mapped[list["Citation"]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
 
 class Source(Base):
@@ -92,6 +93,40 @@ class ExtractedField(Base):
 
     product: Mapped[Product] = relationship(back_populates="fields")
     source: Mapped[Source | None] = relationship(back_populates="fields")
+    citations: Mapped[list["Citation"]] = relationship(back_populates="field", cascade="all, delete-orphan")
+
+
+class Citation(Base):
+    __tablename__ = "citations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    extracted_field_id: Mapped[str] = mapped_column(ForeignKey("extracted_fields.id", ondelete="CASCADE"), index=True)
+    url: Mapped[str] = mapped_column(String(2000))
+    title: Mapped[str | None] = mapped_column(String(500))
+    cited_text: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(String(40), default="gemini")
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    product: Mapped[Product] = relationship(back_populates="citations")
+    field: Mapped[ExtractedField] = relationship(back_populates="citations")
+
+
+class LLMRun(Base):
+    __tablename__ = "llm_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), index=True)
+    provider: Mapped[str] = mapped_column(String(40), index=True)
+    model: Mapped[str] = mapped_column(String(120))
+    task: Mapped[str] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class ReviewItem(Base):

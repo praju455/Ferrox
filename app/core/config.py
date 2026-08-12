@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     groq_model: str = "llama-3.3-70b-versatile"
     openai_model: str = "gpt-4o-mini"
+    enable_grounded_enrichment: bool = False
+    gemini_grounding_model: str = "gemini-2.5-flash"
+    gemini_input_cost_per_million: float = 0.0
+    gemini_output_cost_per_million: float = 0.0
+    groq_input_cost_per_million: float = 0.0
+    groq_output_cost_per_million: float = 0.0
+    openai_input_cost_per_million: float = 0.0
+    openai_output_cost_per_million: float = 0.0
     llm_timeout_seconds: int = 30
     scraper_timeout_seconds: int = 15
     max_source_chars: int = Field(default=120_000, ge=1_000)
@@ -52,6 +60,12 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() in {"production", "prod"}
+
+    def llm_cost_rates(self, provider: str) -> tuple[float, float]:
+        return (
+            float(getattr(self, f"{provider}_input_cost_per_million", 0.0)),
+            float(getattr(self, f"{provider}_output_cost_per_million", 0.0)),
+        )
 
 
 @lru_cache
