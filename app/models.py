@@ -49,6 +49,7 @@ class Product(Base):
     fields: Mapped[list["ExtractedField"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     reviews: Mapped[list["ReviewItem"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     batch_items: Mapped[list["BatchItem"]] = relationship(back_populates="product")
+    pipeline_jobs: Mapped[list["PipelineJob"]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
 
 class Source(Base):
@@ -129,3 +130,19 @@ class BatchItem(Base):
 
     batch: Mapped[BatchJob] = relationship(back_populates="items")
     product: Mapped[Product | None] = relationship(back_populates="batch_items")
+
+
+class PipelineJob(Base):
+    __tablename__ = "pipeline_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True)
+    source_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    stages: Mapped[list[str] | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    product: Mapped[Product] = relationship(back_populates="pipeline_jobs")

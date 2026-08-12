@@ -89,6 +89,20 @@ class PipelineRunRequest(BaseModel):
     stages: list[Literal["classify", "extract", "reconcile", "validate", "enrich", "score"]] | None = None
 
 
+class PipelineJobRead(BaseModel):
+    id: str
+    product_id: str
+    status: str
+    source_ids: list[str] | None
+    stages: list[str] | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class BatchCreateRequest(BaseModel):
     items: list[ProductCreate]
 

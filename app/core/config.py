@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     max_pdf_upload_bytes: int = Field(default=20_000_000, ge=1_000_000)
     cors_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
     trusted_hosts: str = "127.0.0.1,localhost,testserver"
+    worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

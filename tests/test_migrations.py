@@ -7,7 +7,7 @@ from app.db import Base
 
 
 def test_initial_migration_tracks_current_model_tables():
-    migration = Path("migrations/versions/20260812_0001_initial_schema.py").read_text()
+    migration = "\n".join(path.read_text() for path in Path("migrations/versions").glob("*.py"))
 
     for table_name in Base.metadata.tables:
         assert f'"{table_name}"' in migration

@@ -26,6 +26,7 @@ Implemented stages:
 12. API hardening with production API-key enforcement, CORS allowlisting, trusted hosts, request IDs, body/upload limits, security headers, and private-network URL blocking.
 13. Product collection and source evidence APIs so PDF, URL, and text sources can share one product record.
 14. Selectable pipeline stages with retry-safe candidate extraction and idempotent review queue creation.
+15. Persistent pipeline jobs with queued/running/completed/failed states and a separate database-backed worker.
 
 ## Local Setup
 
@@ -39,6 +40,12 @@ docker compose up -d postgres
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
+
+Run the pipeline worker in a second terminal:
+
+```bash
+.venv/bin/python -m app.worker
+```
 
 Health check:
 
@@ -97,6 +104,7 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `MAX_PDF_UPLOAD_BYTES` | Maximum accepted PDF payload. Default: 20 MB. |
 | `CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API. |
 | `TRUSTED_HOSTS` | Comma-separated HTTP host allowlist. |
+| `WORKER_POLL_SECONDS` | Pipeline worker polling interval. Default: 2 seconds. |
 
 LLM calls are routed in `LLM_PROVIDER_ORDER`. Each provider is asked for JSON only, parsed defensively, validated against the task contract, retried on malformed output, and then falls through to the next provider if it still fails. If no live keys are configured, the deterministic mock provider keeps local tests and demos working without secrets.
 
@@ -145,7 +153,11 @@ flowchart TD
     Ingest --> Sources["Raw sources\nsource_id + product_id + authority rank"]
     Sources --> DB
 
-    API --> Pipeline["Selectable product pipeline\nclassify / extract / reconcile / validate / enrich / score"]
+    API --> JobQueue["Persistent pipeline jobs\nqueued / running / completed / failed"]
+    JobQueue --> DB
+    Worker["Pipeline worker\nrow claim with skip locked"] --> JobQueue
+    Worker --> Pipeline["Selectable product pipeline\nclassify / extract / reconcile / validate / enrich / score"]
+    API --> Pipeline
     Pipeline --> Classify["Category classification"]
     Classify --> Schemas["Dynamic schema selector\npump / bearing / motor / fastener"]
     Schemas --> Extract["Structured extraction\nvalue + confidence + source + status + evidence"]
@@ -179,6 +191,7 @@ Core persisted entities:
 | `ExtractedField` | One canonical field per product field name; includes value, unit, confidence, status, source, evidence, alternatives, validation. |
 | `ReviewItem` | Human review queue for conflicts, low confidence, missing required fields, and validation issues. |
 | `BatchJob` / `BatchItem` | Batch processing state and item-level payload/errors. |
+| `PipelineJob` | Durable product pipeline request with selected sources/stages, lifecycle timestamps, and retryable failure state. |
 
 Structured extracted fields use this exact output shape:
 
@@ -305,6 +318,25 @@ The product detail response includes both `sources` and canonical `fields`.
 
 `DELETE /api/v1/products/{product_id}`
 
+### Queue Pipeline Job
+
+`POST /api/v1/products/{product_id}/pipeline/jobs`
+
+```json
+{
+  "source_ids": null,
+  "stages": ["classify", "extract", "reconcile", "validate", "score"]
+}
+```
+
+Returns `202 Accepted` with a persistent queued job. The worker claims queued jobs in creation order and records start/completion timestamps or a bounded failure message.
+
+`GET /api/v1/pipeline/jobs?product_id={product_id}&status=queued&limit=100` lists jobs.
+
+`GET /api/v1/pipeline/jobs/{job_id}` returns one job.
+
+`POST /api/v1/pipeline/jobs/{job_id}/process` processes or retries a queued/failed job immediately for local development and operations.
+
 ### List Review Items
 
 `GET /api/v1/reviews?status=open&severity=high&product_id={product_id}&limit=100`
@@ -391,12 +423,12 @@ Returns batch summary plus item-level status, error, `product_id`, and original 
 }
 ```
 
-Processes queued items and, when `include_failed` is true, retries failed items. Processing is synchronous for now but isolated behind a reusable function so it can move to a background worker later.
+Processes queued batch items and, when `include_failed` is true, retries failed items. Batch processing remains synchronous; individual product pipelines can use the persistent worker-backed job API above.
 
 ## Test Result
 
 Latest local run:
 
 ```text
-20 passed
+33 passed
 ```

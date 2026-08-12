@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.security import require_internal_api_key
 from app.db import get_db
-from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, Product, ReviewItem, ReviewStatus, Source
+from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, PipelineJob, Product, ReviewItem, ReviewStatus, Source
 from app.schemas import (
     BatchCreateRequest,
     BatchDetail,
@@ -26,6 +26,7 @@ from app.schemas import (
     ExtractedFieldRead,
     FieldCorrectionRequest,
     PipelineRunRequest,
+    PipelineJobRead,
     ProductCreateRequest,
     ProductDetail,
     ProductRead,
@@ -38,6 +39,7 @@ from app.schemas import (
     UrlIngestionRequest,
 )
 from app.services.ingestion import IngestionService
+from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_pipeline_job
 from app.services.pipeline import ProductPipeline
 
 
@@ -253,6 +255,66 @@ def run_pipeline(product_id: str, payload: PipelineRunRequest | None = None, db:
         source_ids=payload.source_ids if payload else None,
         stages=payload.stages if payload else None,
     )
+
+
+@router.post(
+    "/products/{product_id}/pipeline/jobs",
+    response_model=PipelineJobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_internal_api_key)],
+)
+def create_pipeline_job(
+    product_id: str,
+    payload: PipelineRunRequest | None = None,
+    db: Session = Depends(get_db),
+) -> PipelineJob:
+    product_or_404(product_id, db)
+    job = PipelineJob(
+        product_id=product_id,
+        source_ids=payload.source_ids if payload else None,
+        stages=payload.stages if payload else None,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.get("/pipeline/jobs", response_model=list[PipelineJobRead])
+def list_pipeline_jobs(
+    product_id: str | None = Query(default=None),
+    job_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[PipelineJob]:
+    query = select(PipelineJob)
+    if product_id:
+        query = query.where(PipelineJob.product_id == product_id)
+    if job_status:
+        query = query.where(PipelineJob.status == job_status)
+    return list(db.scalars(query.order_by(PipelineJob.created_at.desc()).limit(limit)))
+
+
+@router.get("/pipeline/jobs/{job_id}", response_model=PipelineJobRead)
+def get_pipeline_job(job_id: str, db: Session = Depends(get_db)) -> PipelineJob:
+    job = db.get(PipelineJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Pipeline job not found")
+    return job
+
+
+@router.post(
+    "/pipeline/jobs/{job_id}/process",
+    response_model=PipelineJobRead,
+    dependencies=[Depends(require_internal_api_key)],
+)
+def process_queued_pipeline_job(job_id: str, db: Session = Depends(get_db)) -> PipelineJob:
+    job = db.get(PipelineJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Pipeline job not found")
+    if job.status not in PROCESSABLE_JOB_STATUSES:
+        raise HTTPException(status_code=409, detail=f"Pipeline job is already {job.status}")
+    return process_pipeline_job(db, job)
 
 
 @router.get("/products/{product_id}", response_model=ProductDetail)
