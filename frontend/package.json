@@ -1,0 +1,11 @@
+{
+  "name": "ferrox-product-intelligence-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Operational UI/UX for the Ferrox Industrial Product Intelligence Platform.",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node scripts/build.js"
+  }
+}

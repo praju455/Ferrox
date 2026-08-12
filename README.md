@@ -1,8 +1,8 @@
 # Ferrox
 
-Backend for the **Industrial Product Intelligence Platform**: a FastAPI service that converts scattered industrial product information from PDFs, URLs, and raw catalog text into traceable, validated, enriched structured product data.
+Backend and frontend for the **Industrial Product Intelligence Platform**: a system that converts scattered industrial product information from PDFs, URLs, and raw catalog text into traceable, validated, enriched structured product data.
 
-Frontend work is intentionally not included yet. This repository currently exposes the backend APIs and frontend contract only.
+The backend lives in `app/`. The frontend UI/UX design lives in `frontend/`.
 
 ## Backend Status
 
@@ -57,6 +57,15 @@ To run tests:
 ```bash
 .venv/bin/python -m pytest
 ```
+
+To run the frontend UI:
+
+```bash
+cd frontend
+npm run dev
+```
+
+The frontend defaults to `http://127.0.0.1:8000/api/v1` for the backend API.
 
 ## Environment
 

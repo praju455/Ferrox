@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Ferrox is an industrial product intelligence dashboard for extracting, reconciling, validating, and reviewing structured catalog data."
+    />
+    <title>Ferrox Product Intelligence</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-frame">
+      <aside class="sidebar" aria-label="Ferrox navigation">
+        <a class="brand" href="#overview" aria-label="Ferrox home">
+          <span class="brand-symbol">Fx</span>
+          <span>
+            <strong>Ferrox</strong>
+            <small>Catalog intelligence</small>
+          </span>
+        </a>
+
+        <nav class="nav">
+          <a class="active" href="#overview"><span>⌁</span>Command Center</a>
+          <a href="#ingest"><span>⇧</span>Ingestion</a>
+          <a href="#pipeline"><span>◇</span>Extraction Pipeline</a>
+          <a href="#review"><span>!</span>Review Queue</a>
+          <a href="#batch"><span>↻</span>Batch Runs</a>
+          <a href="#api"><span>{ }</span>API Contract</a>
+        </nav>
+
+        <div class="connection-card">
+          <div>
+            <p>Backend status</p>
+            <strong id="backendStatus">Not checked</strong>
+          </div>
+          <button id="healthButton" class="square-button" type="button" aria-label="Check backend health">↻</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="hero" id="overview">
+          <div class="hero-copy">
+            <span class="eyebrow">Industrial Product Intelligence Platform</span>
+            <h1>Turn messy product evidence into validated catalog records.</h1>
+            <p>
+              A working interface for catalog teams handling PDFs, supplier pages, raw snippets, reconciliation,
+              semantic validation, enrichment, and human review.
+            </p>
+          </div>
+          <div class="hero-controls">
+            <label>
+              API base
+              <input id="apiBaseInput" value="http://127.0.0.1:8000/api/v1" />
+            </label>
+            <label>
+              Internal key
+              <input id="apiKeyInput" type="password" placeholder="Optional X-API-Key" />
+            </label>
+          </div>
+        </header>
+
+        <section class="metrics" aria-label="Catalog metrics">
+          <article class="metric primary-metric">
+            <span>Readiness</span>
+            <strong>78%</strong>
+            <p>Validated fields across active batches</p>
+          </article>
+          <article class="metric">
+            <span>Open reviews</span>
+            <strong>23</strong>
+            <p>11 conflicts · 8 missing · 4 low confidence</p>
+          </article>
+          <article class="metric">
+            <span>Source coverage</span>
+            <strong>3.1×</strong>
+            <p>Average sources per product record</p>
+          </article>
+          <article class="metric">
+            <span>Batch throughput</span>
+            <strong>412</strong>
+            <p>Products processed in the latest run</p>
+          </article>
+        </section>
+
+        <section class="work-surface" id="ingest">
+          <div class="section-title">
+            <div>
+              <span class="eyebrow">Ingestion</span>
+              <h2>Capture source evidence without losing traceability.</h2>
+            </div>
+            <div class="segmented" aria-label="Input type selector">
+              <button class="active" type="button">Text</button>
+              <button type="button">URL</button>
+              <button type="button">PDF</button>
+            </div>
+          </div>
+
+          <div class="ingest-grid">
+            <form id="ingestForm" class="ingest-form">
+              <label>
+                Product name
+                <input name="productName" value="Aurora End-Suction Pump AXP-200" required />
+              </label>
+              <label>
+                Source identifier
+                <input name="sourceIdentifier" value="manufacturer-datasheet" required />
+              </label>
+              <label class="full">
+                Raw source text
+                <textarea name="sourceText" required>Manufacturer: Aurora Industrial. Model: AXP-200. Flow rate 120 GPM. 50 ft head. 5 HP. Material cast iron.</textarea>
+              </label>
+              <div class="button-row full">
+                <button class="primary-button" type="submit">Ingest source</button>
+                <button class="secondary-button" id="pipelineButton" type="button">Run extraction</button>
+              </div>
+            </form>
+
+            <aside class="trace-card">
+              <span class="eyebrow">Evidence ranking</span>
+              <h3>Datasheets win conflicts by default.</h3>
+              <div class="rank-list">
+                <div><strong>01</strong><span>PDF datasheet</span><em>Highest authority</em></div>
+                <div><strong>02</strong><span>Catalog snippet</span><em>Medium authority</em></div>
+                <div><strong>03</strong><span>Marketing URL</span><em>Lowest authority</em></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="two-column" id="pipeline">
+          <article class="panel large">
+            <div class="section-title compact">
+              <div>
+                <span class="eyebrow">Pipeline</span>
+                <h2>LLM extraction with explicit validation gates.</h2>
+              </div>
+              <span class="pill success">Gemini → Groq → OpenAI</span>
+            </div>
+            <div class="pipeline">
+              <div class="stage complete"><span>1</span><strong>Classify</strong><small>Industrial Pump</small></div>
+              <div class="stage complete"><span>2</span><strong>Select Schema</strong><small>flow · head · power · material</small></div>
+              <div class="stage active"><span>3</span><strong>Extract</strong><small>source-grounded JSON</small></div>
+              <div class="stage warning"><span>4</span><strong>Reconcile</strong><small>2 conflicts found</small></div>
+              <div class="stage"><span>5</span><strong>Validate</strong><small>rule + semantic checks</small></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <span class="eyebrow">Canonical fields</span>
+            <h3>AXP-200 Pump</h3>
+            <dl class="field-list">
+              <div><dt>Flow rate</dt><dd>120 GPM</dd></div>
+              <div><dt>Head</dt><dd>50 ft</dd></div>
+              <div><dt>Power</dt><dd>5 HP</dd></div>
+              <div><dt>Material</dt><dd><span class="pill warning">Conflict</span></dd></div>
+            </dl>
+          </article>
+        </section>
+
+        <section class="work-surface" id="review">
+          <div class="section-title">
+            <div>
+              <span class="eyebrow">Review queue</span>
+              <h2>Show reviewers only the fields that need judgment.</h2>
+            </div>
+            <button class="secondary-button" id="reviewsButton" type="button">Load reviews</button>
+          </div>
+
+          <div class="review-grid">
+            <div class="review-table">
+              <div class="review-row head">
+                <span>Product</span><span>Field</span><span>Issue</span><span>Confidence</span><span>Status</span>
+              </div>
+              <button class="review-row selected" type="button">
+                <span>AXP-200 Pump</span><span>material</span><span>Datasheet and website disagree</span><span>0.62</span><span class="pill warning">Open</span>
+              </button>
+              <button class="review-row" type="button">
+                <span>VM-10 Motor</span><span>speed_rpm</span><span>Required field missing</span><span>0.15</span><span class="pill warning">Open</span>
+              </button>
+              <button class="review-row" type="button">
+                <span>BR-6205 Bearing</span><span>load_rating</span><span>Semantic mismatch</span><span>0.44</span><span class="pill neutral">Queued</span>
+              </button>
+            </div>
+
+            <aside class="resolution">
+              <span class="eyebrow">Resolve conflict</span>
+              <h3>material</h3>
+              <div class="compare">
+                <div><strong>cast iron</strong><span>PDF datasheet · authority 1</span></div>
+                <div><strong>stainless steel</strong><span>Supplier webpage · authority 3</span></div>
+              </div>
+              <label>
+                Corrected value
+                <input value="cast iron" />
+              </label>
+              <div class="button-row">
+                <button class="primary-button" type="button">Validate field</button>
+                <button class="secondary-button" type="button">Dismiss</button>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="two-column" id="batch">
+          <article class="panel large">
+            <div class="section-title compact">
+              <div>
+                <span class="eyebrow">Batch runs</span>
+                <h2>Bulk processing with item-level failure visibility.</h2>
+              </div>
+              <button class="secondary-button" id="batchesButton" type="button">Refresh</button>
+            </div>
+            <div class="batch-stack">
+              <div class="batch-item"><span>Batch 8421</span><strong>412 / 428</strong><progress value="96" max="100"></progress><em>16 review items</em></div>
+              <div class="batch-item"><span>Batch 8419</span><strong>128 / 128</strong><progress value="100" max="100"></progress><em>Completed</em></div>
+              <div class="batch-item"><span>Batch 8417</span><strong>74 / 80</strong><progress value="92" max="100"></progress><em>6 failed · retry ready</em></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <span class="eyebrow">Ops priority</span>
+            <ul class="priority-list">
+              <li>Retry 6 failed source scrapes</li>
+              <li>Resolve 11 cross-source conflicts</li>
+              <li>Complete 8 required attributes</li>
+              <li>Export validated records to catalog</li>
+            </ul>
+          </article>
+        </section>
+
+        <section class="api-panel" id="api">
+          <div>
+            <span class="eyebrow">Backend contract</span>
+            <h2>Designed around the Ferrox API already built.</h2>
+            <p>
+              This interface maps directly to ingestion, pipeline, review, correction, batch, and health endpoints.
+            </p>
+          </div>
+          <code>GET /health · POST /products/ingest/text · PATCH /products/:id/fields/:field · GET /batches/:id</code>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
