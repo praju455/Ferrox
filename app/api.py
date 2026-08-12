@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -336,9 +336,11 @@ def download_product_source(product_id: str, source_id: str, db: Session = Depen
 
 @router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_internal_api_key)])
 def delete_product(product_id: str, db: Session = Depends(get_db)) -> Response:
-    product = product_or_404(product_id, db)
-    storage_keys = [source.storage_key for source in product.sources if source.storage_key]
-    db.delete(product)
+    product_or_404(product_id, db)
+    storage_keys = list(
+        db.scalars(select(Source.storage_key).where(Source.product_id == product_id, Source.storage_key.is_not(None)))
+    )
+    db.execute(delete(Product).where(Product.id == product_id))
     db.commit()
     storage = build_object_storage(get_settings())
     for storage_key in storage_keys:
