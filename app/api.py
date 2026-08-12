@@ -7,6 +7,8 @@ from app.db import get_db
 from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, Product, ReviewItem, ReviewStatus
 from app.schemas import (
     BatchCreateRequest,
+    BatchDetail,
+    BatchProcessRequest,
     BatchRead,
     ExtractedFieldRead,
     FieldCorrectionRequest,
@@ -184,19 +186,67 @@ def create_batch(payload: BatchCreateRequest, db: Session = Depends(get_db)) -> 
             db.add(IngestionService(get_settings()).from_text(product.id, source_in.raw_content, source_in.source_identifier))
         db.add(BatchItem(batch_id=batch.id, product_id=product.id, status="queued", payload=item.model_dump()))
     db.flush()
+    process_batch_items(db, batch, include_failed=False)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+@router.get("/batches", response_model=list[BatchRead])
+def list_batches(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[BatchJob]:
+    query = select(BatchJob)
+    if status is not None:
+        query = query.where(BatchJob.status == status)
+    return list(db.scalars(query.order_by(BatchJob.created_at.desc()).limit(limit)))
+
+
+@router.get("/batches/{batch_id}", response_model=BatchDetail)
+def get_batch(batch_id: str, db: Session = Depends(get_db)) -> BatchJob:
+    batch = db.get(BatchJob, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch
+
+
+@router.post("/batches/{batch_id}/process", response_model=BatchDetail)
+def process_batch(batch_id: str, payload: BatchProcessRequest | None = None, db: Session = Depends(get_db)) -> BatchJob:
+    batch = db.get(BatchJob, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    process_batch_items(db, batch, include_failed=payload.include_failed if payload else True)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+def process_batch_items(db: Session, batch: BatchJob, include_failed: bool) -> None:
+    batch.status = "running"
+    batch.processed_items = 0
+    batch.failed_items = 0
+    eligible_statuses = {"queued", "failed"} if include_failed else {"queued"}
     for item in batch.items:
+        if item.status not in eligible_statuses:
+            if item.status == "processed":
+                batch.processed_items += 1
+            elif item.status == "failed":
+                batch.failed_items += 1
+            continue
         try:
+            if not item.product:
+                raise ValueError("Batch item has no product")
             ProductPipeline(db).run(item.product)
             item.status = "processed"
+            item.error = None
             batch.processed_items += 1
         except Exception as exc:
             item.status = "failed"
             item.error = str(exc)
             batch.failed_items += 1
     batch.status = "completed" if batch.failed_items == 0 else "completed_with_errors"
-    db.commit()
-    db.refresh(batch)
-    return batch
 
 
 def create_app() -> FastAPI:

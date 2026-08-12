@@ -73,6 +73,25 @@ class BatchRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BatchItemRead(BaseModel):
+    id: str
+    batch_id: str
+    product_id: str | None
+    status: str
+    error: str | None
+    payload: dict[str, Any]
+
+    model_config = {"from_attributes": True}
+
+
+class BatchDetail(BatchRead):
+    items: list[BatchItemRead] = Field(default_factory=list)
+
+
+class BatchProcessRequest(BaseModel):
+    include_failed: bool = True
+
+
 class ReviewItemRead(BaseModel):
     id: str
     product_id: str

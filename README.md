@@ -276,10 +276,34 @@ This creates or updates the canonical extracted field, marks it `validated`, rec
 }
 ```
 
+### List Batches
+
+`GET /api/v1/batches?status=completed&limit=100`
+
+Returns recent batch summaries.
+
+### Get Batch Detail
+
+`GET /api/v1/batches/{batch_id}`
+
+Returns batch summary plus item-level status, error, `product_id`, and original payload.
+
+### Process Batch
+
+`POST /api/v1/batches/{batch_id}/process`
+
+```json
+{
+  "include_failed": true
+}
+```
+
+Processes queued items and, when `include_failed` is true, retries failed items. Processing is synchronous for now but isolated behind a reusable function so it can move to a background worker later.
+
 ## Test Result
 
 Latest local run:
 
 ```text
-14 passed
+16 passed
 ```
