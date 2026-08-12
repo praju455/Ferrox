@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
-const defaultApiBase = "http://127.0.0.1:8000/api/v1";
+const defaultApiBase = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000/api/v1";
 
 const sourceData = {
   PDF: {
@@ -52,12 +53,10 @@ export default function Home() {
   const [selectedSource, setSelectedSource] = useState<SourceName>("PDF");
   const [selectedReview, setSelectedReview] = useState(0);
   const [apiBase, setApiBase] = useState(defaultApiBase);
-  const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<"Not checked" | "Checking" | "Healthy" | "Offline">("Not checked");
 
   useEffect(() => {
     setApiBase(localStorage.getItem("ferrox.ui.apiBase") || defaultApiBase);
-    setApiKey(localStorage.getItem("ferrox.ui.apiKey") || "");
   }, []);
 
   const activeSource = sourceData[selectedSource];
@@ -73,17 +72,10 @@ export default function Home() {
     localStorage.setItem("ferrox.ui.apiBase", value.replace(/\/$/, ""));
   }
 
-  function updateApiKey(value: string) {
-    setApiKey(value);
-    localStorage.setItem("ferrox.ui.apiKey", value);
-  }
-
   async function checkHealth() {
     setStatus("Checking");
     try {
-      const response = await fetch(`${apiBase.replace(/\/$/, "")}/health`, {
-        headers: apiKey ? { "X-API-Key": apiKey } : undefined,
-      });
+      const response = await fetch(`${apiBase.replace(/\/$/, "")}/health`);
       if (!response.ok) throw new Error(String(response.status));
       setStatus("Healthy");
     } catch {
@@ -104,9 +96,9 @@ export default function Home() {
           <a href="#review">Review</a>
           <a href="#developers">Developers</a>
         </nav>
-        <a className="header-cta" href="#connect">
+        <Link className="header-cta" href="/workspace">
           Open workspace <span aria-hidden="true">&#8599;</span>
-        </a>
+        </Link>
       </header>
 
       <main id="top">
@@ -124,9 +116,9 @@ export default function Home() {
                 product records with evidence attached to every field.
               </p>
               <div className="hero-actions">
-                <a className="action-primary" href="#connect">
+                <Link className="action-primary" href="/workspace">
                   Start an extraction <span aria-hidden="true">&#8594;</span>
-                </a>
+                </Link>
                 <a className="action-secondary" href="#platform">
                   See how it works
                 </a>
@@ -326,8 +318,8 @@ export default function Home() {
             <span className="section-index light">04 / DEVELOPERS</span>
             <h2>A backend contract ready for the product UI.</h2>
             <p>
-              FastAPI, PostgreSQL and a provider fallback chain from Gemini to Groq to OpenAI. Every write route can
-              be protected with an internal key, and every response carries a request ID.
+              FastAPI, PostgreSQL and a provider fallback chain from Gemini to Groq to OpenAI. Reviewer and admin
+              accounts use expiring JWT access, and every response carries a request ID.
             </p>
           </div>
           <div className="contract-list">
@@ -351,14 +343,8 @@ export default function Home() {
               <input aria-label="API base" value={apiBase} onChange={(event) => updateApiBase(event.target.value)} />
             </label>
             <label>
-              <span>INTERNAL KEY</span>
-              <input
-                aria-label="Internal API key"
-                placeholder="Optional for local development"
-                type="password"
-                value={apiKey}
-                onChange={(event) => updateApiKey(event.target.value)}
-              />
+              <span>TEAM ACCESS</span>
+              <Link className="connection-login" href="/login">Sign in with a reviewer account <span aria-hidden="true">&#8599;</span></Link>
             </label>
             <button onClick={checkHealth} type="button">Check connection <span aria-hidden="true">&#8594;</span></button>
             <div className={`connection-state ${status.toLowerCase().replace(" ", "-")}`}>
@@ -371,7 +357,7 @@ export default function Home() {
       <footer>
         <a className="brand footer-brand" href="#top"><span className="brand-mark">F/</span><span>Ferrox</span></a>
         <p>Industrial product intelligence, verified at source.</p>
-        <span>BACKEND v0.2 - NEXT.JS</span>
+        <span>BACKEND v1.0 - NEXT.JS</span>
       </footer>
     </>
   );

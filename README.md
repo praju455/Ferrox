@@ -2,11 +2,11 @@
 
 Backend and frontend for the **Industrial Product Intelligence Platform**: a system that converts scattered industrial product information from PDFs, URLs, and raw catalog text into traceable, validated, enriched structured product data.
 
-The backend lives in `app/`. The frontend landing page and future app shell live in `frontend/` as a Next.js + TypeScript project.
+The backend lives in `app/`. The frontend lives in `frontend/` as a Next.js + TypeScript application with public, authentication, and catalog workspace routes.
 
 ## Frontend Direction
 
-The landing page now uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. It includes a generated centrifugal-pump hero image, an interactive PDF/URL/text source inspector, a full extraction pipeline, canonical record evidence, conflict review, the API contract, and a live backend health check. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
+The landing page uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. The connected `/workspace` adds product/source operations, asynchronous pipeline tracking, citation inspection, human review, batch staging, and LLM telemetry. `/login` handles JWT access. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
 
 ## Backend Status
 
@@ -133,6 +133,7 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `BACKUP_INTERVAL_SECONDS` | Delay between scheduled PostgreSQL dumps. Default: one day. |
 | `BACKUP_RETENTION_COUNT` | Number of newest object-store dumps retained. Default: 14. |
 | `BACKUP_PREFIX` | Private object key prefix for database dumps. |
+| `NEXT_PUBLIC_API_BASE` | Browser-visible API base used by the Next.js workspace. |
 
 LLM calls are routed in `LLM_PROVIDER_ORDER`. Each provider is asked for JSON only, parsed defensively, validated against the task contract, retried on malformed output, and then falls through to the next provider if it still fails. If no live keys are configured, the deterministic mock provider keeps local tests and demos working without secrets.
 
@@ -162,7 +163,9 @@ Production mode (`APP_ENV=production`) refuses to start without `JWT_SECRET`. Ev
 
 ```mermaid
 flowchart TD
-    UI["Next.js frontend\nindustrial landing page"] --> Inspector["Interactive source inspector\nPDF / URL / text"]
+    UI["Next.js frontend\nlanding + login + operations workspace"] --> Inspector["Interactive source inspector\nPDF / URL / text"]
+    UI --> Workspace["Connected workspace\nproducts / reviews / batches / operations"]
+    Workspace --> Guard
     UI --> ReviewUI["Conflict review preview"]
     UI --> HealthUI["Live backend health check"]
     HealthUI --> Guard["API safety layer\nCORS + trusted hosts + request ID + limits"]

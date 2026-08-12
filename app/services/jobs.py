@@ -61,6 +61,7 @@ def _ingest_batch_item_sources(db: Session, item: BatchItem) -> None:
         return
     settings = get_settings()
     service = IngestionService(settings, build_object_storage(settings))
+    sanitized_sources: list[dict] = []
     for source_payload in item.payload.get("sources", []):
         source_type = source_payload["source_type"]
         identifier = source_payload["source_identifier"]
@@ -77,6 +78,12 @@ def _ingest_batch_item_sources(db: Session, item: BatchItem) -> None:
         else:
             raise ValueError(f"Unsupported source type: {source_type}")
         db.add(source)
+        sanitized = dict(source_payload)
+        if source_type == "pdf":
+            sanitized.pop("content_base64", None)
+            sanitized["stored"] = True
+        sanitized_sources.append(sanitized)
+    item.payload = {**item.payload, "sources": sanitized_sources}
     db.commit()
 
 

@@ -1,6 +1,6 @@
 # Ferrox Frontend
 
-The Ferrox frontend is a Next.js + TypeScript landing experience for the Industrial Product Intelligence Platform. It explains the product through the actual workflow: source ingestion, evidence-backed extraction, reconciliation, validation, human review, and the existing backend contract.
+The Ferrox frontend is a Next.js + TypeScript product experience for the Industrial Product Intelligence Platform. It includes the public landing page, JWT sign-in, and a connected catalog operations workspace.
 
 ## Design Direction
 
@@ -23,7 +23,13 @@ flowchart LR
     Platform --> Evidence["Canonical record\nconfidence + field evidence"]
     Evidence --> Review["Human review\ncompare conflicting values"]
     Review --> Contract["Developer contract\ncurrent backend endpoints"]
-    Contract --> Connect["Live connection check\nAPI base + optional internal key"]
+    Contract --> Connect["Live connection check\nAPI readiness"]
+    Connect --> Login["JWT sign-in\nreviewer / admin"]
+    Login --> Workspace["Catalog workspace\nproducts / reviews / batches / operations"]
+    Workspace --> Product["Product record\ntext / URL / PDF ingestion"]
+    Product --> Pipeline["Asynchronous pipeline job\nstatus polling"]
+    Workspace --> Batch["Multi-item batch staging\ntext / URL / PDF"]
+    Workspace --> Telemetry["Admin LLM telemetry\nlatency / tokens / cost"]
 
     Inspector["PDF / URL / text tabs"] --> Hero
     Backend["FastAPI /api/v1/health"] --> Connect
@@ -36,11 +42,11 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:3000`.
+Open `http://127.0.0.1:3000`. The application workspace is at `/workspace`, and authenticated deployments use `/login`.
 
 ## Backend Contract
 
-The landing page uses the current Ferrox API shape:
+The frontend uses the current Ferrox API shape, including:
 
 - `GET /api/v1/health`
 - `POST /api/v1/products/ingest/text`
@@ -48,5 +54,12 @@ The landing page uses the current Ferrox API shape:
 - `GET /api/v1/reviews`
 - `GET /api/v1/batches`
 - `PATCH /api/v1/products/{product_id}/fields/{field_name}`
+- `POST /api/v1/auth/token`
+- `GET /api/v1/auth/me`
+- `POST /api/v1/products/{product_id}/sources/text|url|pdf`
+- `POST /api/v1/products/{product_id}/pipeline/jobs`
+- `GET /api/v1/pipeline/jobs/{job_id}`
+- `POST /api/v1/batches`
+- `GET /api/v1/observability/llm-runs`
 
-The connection check stores its API base and optional internal key in browser-local storage only.
+The browser stores the selected API base in local storage and keeps the JWT access token in session storage. Production deployments should serve the frontend over TLS and use the configured token lifetime.

@@ -124,6 +124,10 @@ def test_async_batch_ingests_url_and_durable_pdf(client, monkeypatch):
     assert pdf_source["storage_backend"] == "local"
     assert pdf_source["content_length"] == len(pdf_bytes)
     assert len(pdf_source["content_sha256"]) == 64
+    batch_detail = client.get(f"/api/v1/batches/{batch_id}").json()
+    pdf_payload = next(source for source in batch_detail["items"][0]["payload"]["sources"] if source["source_type"] == "pdf")
+    assert "content_base64" not in pdf_payload
+    assert pdf_payload["stored"] is True
 
     download = client.get(f"/api/v1/products/{product_id}/sources/{pdf_source['id']}/content")
     assert download.status_code == 200
