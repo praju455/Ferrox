@@ -10,7 +10,7 @@ Implemented stages:
 
 1. FastAPI scaffold with SQLAlchemy models for products, raw sources, extracted fields, review queue, and batch jobs.
 2. PDF, URL, and raw text ingestion services.
-3. LLM pipeline abstraction with provider order: Gemini primary, Groq fallback, OpenAI fallback, deterministic mock fallback for local tests.
+3. LLM pipeline abstraction with live Gemini primary, Groq fallback, OpenAI fallback, and deterministic mock fallback for local tests.
 4. Category classification, predefined dynamic schemas, and structured extraction.
 5. Multi-source reconciliation with explicit conflict handling and source authority ranking.
 6. Rule validation plus semantic LLM validation hook.
@@ -55,10 +55,21 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `GEMINI_API_KEY` | Primary LLM provider key. |
 | `GROQ_API_KEY` | First fallback provider key. |
 | `OPENAI_API_KEY` | Second fallback provider key. |
+| `GEMINI_MODEL` | Gemini model name. Default: `gemini-2.5-flash`. |
+| `GROQ_MODEL` | Groq chat model name. Default: `llama-3.3-70b-versatile`. |
+| `OPENAI_MODEL` | OpenAI chat model name. Default: `gpt-4o-mini`. |
 | `SCRAPER_TIMEOUT_SECONDS` | URL scrape timeout. |
 | `MAX_SOURCE_CHARS` | Maximum retained source text per source. |
 
-The current provider abstraction is production-shaped but uses a deterministic mock fallback when provider keys are unavailable. Live provider adapters should be filled in behind `LLMProvider.complete_json` without changing route or pipeline contracts.
+LLM calls are routed in `LLM_PROVIDER_ORDER`. Each provider is asked for JSON only, parsed defensively, validated against the task contract, retried on malformed output, and then falls through to the next provider if it still fails. If no live keys are configured, the deterministic mock provider keeps local tests and demos working without secrets.
+
+Provider behavior:
+
+| Provider | API style |
+| --- | --- |
+| Gemini | `generateContent` with `responseMimeType: application/json`. |
+| Groq | OpenAI-compatible chat completions with `response_format: {"type": "json_object"}`. |
+| OpenAI | Chat completions with `response_format: {"type": "json_object"}`. |
 
 ## Architecture
 
@@ -86,9 +97,10 @@ flowchart TD
     Review --> DB
 
     Pipeline --> LLM["LLM client"]
-    LLM --> Gemini["Gemini primary"]
-    LLM --> Groq["Groq fallback"]
-    LLM --> OpenAI["OpenAI fallback"]
+    LLM --> JSON["JSON parser + contract validator\nretry malformed outputs"]
+    JSON --> Gemini["Gemini primary"]
+    JSON --> Groq["Groq fallback"]
+    JSON --> OpenAI["OpenAI fallback"]
     LLM --> Mock["Mock local fallback"]
 
     API --> Batch["Batch processor"]
@@ -211,5 +223,5 @@ Returns product detail with extracted fields, validation state, confidence, comp
 Latest local run:
 
 ```text
-4 passed
+9 passed
 ```

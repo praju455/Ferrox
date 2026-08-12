@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from app.core.config import Settings
-from app.services.catalog_schemas import PREDEFINED_SCHEMAS, schema_for_category
+from app.services.catalog_schemas import schema_for_category
 
 
 class LLMError(RuntimeError):
@@ -29,19 +29,106 @@ class LLMProvider(abc.ABC):
         raise NotImplementedError
 
 
-class HTTPJSONProvider(LLMProvider):
-    endpoint: str
+class BaseHTTPJSONProvider(LLMProvider):
     api_key: str | None
 
-    def __init__(self, name: str, api_key: str | None, timeout: int):
+    def __init__(self, name: str, api_key: str | None, model: str, timeout: int, max_retries: int = 2):
         self.name = name
         self.api_key = api_key
+        self.model = model
         self.timeout = timeout
+        self.max_retries = max_retries
 
     def complete_json(self, request: LLMRequest) -> dict[str, Any]:
         if not self.api_key:
             raise LLMError(f"{self.name} API key is not configured")
-        raise LLMError(f"{self.name} live integration is configured but not implemented in test mode")
+        prompt = self._json_prompt(request)
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                content = self._complete_text(prompt)
+                payload = parse_json_object(content)
+                validate_llm_payload(request.task, payload, request.response_schema)
+                return payload
+            except Exception as exc:
+                last_error = exc
+                prompt = self._retry_prompt(request, exc)
+        raise LLMError(f"{self.name} returned invalid JSON: {last_error}")
+
+    @abc.abstractmethod
+    def _complete_text(self, prompt: str) -> str:
+        raise NotImplementedError
+
+    def _json_prompt(self, request: LLMRequest) -> str:
+        schema_text = json.dumps(request.response_schema, indent=2) if request.response_schema else "No formal schema supplied."
+        return (
+            "Return only valid JSON. Do not include markdown fences, prose, or comments.\n"
+            f"Task: {request.task}\n"
+            f"Expected response contract:\n{response_contract_for_task(request.task)}\n"
+            f"Field schema, when applicable:\n{schema_text}\n\n"
+            f"Input:\n{request.prompt}"
+        )
+
+    def _retry_prompt(self, request: LLMRequest, error: Exception) -> str:
+        return (
+            f"The previous response failed JSON validation: {error}.\n"
+            "Return corrected valid JSON only.\n\n"
+            + self._json_prompt(request)
+        )
+
+
+class GeminiProvider(BaseHTTPJSONProvider):
+    def __init__(self, api_key: str | None, model: str, timeout: int):
+        super().__init__("gemini", api_key, model, timeout)
+
+    def _complete_text(self, prompt: str) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+        response = requests.post(
+            url,
+            headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key or ""},
+            json={
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        text = "".join(part.get("text", "") for part in parts)
+        if not text:
+            raise LLMError("Gemini response did not include text content")
+        return text
+
+
+class OpenAICompatibleProvider(BaseHTTPJSONProvider):
+    endpoint: str
+
+    def __init__(self, name: str, endpoint: str, api_key: str | None, model: str, timeout: int):
+        super().__init__(name, api_key, model, timeout)
+        self.endpoint = endpoint
+
+    def _complete_text(self, prompt: str) -> str:
+        response = requests.post(
+            self.endpoint,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": self.model,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": "You are an industrial catalog extraction engine. Return JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content")
+        if not content:
+            raise LLMError(f"{self.name} response did not include message content")
+        return content
 
 
 class MockIndustrialProvider(LLMProvider):
@@ -125,9 +212,21 @@ class MockIndustrialProvider(LLMProvider):
 class LLMClient:
     def __init__(self, settings: Settings):
         providers = {
-            "gemini": HTTPJSONProvider("gemini", settings.gemini_api_key, settings.llm_timeout_seconds),
-            "groq": HTTPJSONProvider("groq", settings.groq_api_key, settings.llm_timeout_seconds),
-            "openai": HTTPJSONProvider("openai", settings.openai_api_key, settings.llm_timeout_seconds),
+            "gemini": GeminiProvider(settings.gemini_api_key, settings.gemini_model, settings.llm_timeout_seconds),
+            "groq": OpenAICompatibleProvider(
+                "groq",
+                "https://api.groq.com/openai/v1/chat/completions",
+                settings.groq_api_key,
+                settings.groq_model,
+                settings.llm_timeout_seconds,
+            ),
+            "openai": OpenAICompatibleProvider(
+                "openai",
+                "https://api.openai.com/v1/chat/completions",
+                settings.openai_api_key,
+                settings.openai_model,
+                settings.llm_timeout_seconds,
+            ),
             "mock": MockIndustrialProvider(),
         }
         self.providers = [providers[name] for name in settings.provider_order if name in providers]
@@ -141,3 +240,80 @@ class LLMClient:
             except Exception as exc:
                 last_error = exc
         raise LLMError(str(last_error) if last_error else "No LLM providers configured")
+
+
+def parse_json_object(content: str) -> dict[str, Any]:
+    content = content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.I)
+        content = re.sub(r"\s*```$", "", content)
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", content, flags=re.S)
+        if not match:
+            raise
+        payload = json.loads(match.group(0))
+    if not isinstance(payload, dict):
+        raise LLMError("LLM response must be a JSON object")
+    return payload
+
+
+def response_contract_for_task(task: str) -> str:
+    contracts = {
+        "classify": '{"category": "Industrial Pump | Bearing | Electric Motor | Fastener | other", "confidence": 0.0}',
+        "extract": '{"fields": {"field_name": {"value": "...", "unit": null, "confidence": 0.0, "source_identifier": "...", "status": "extracted", "evidence": "..."}}}',
+        "reconcile": '{"value": "...", "unit": null, "source_id": "...", "confidence": 0.0, "reason": "..."}',
+        "semantic_validate": '{"valid": true, "issues": [], "confidence_delta": 0.0}',
+        "enrich": '{"enriched_fields": {}, "notes": []}',
+    }
+    return contracts.get(task, "{}")
+
+
+def validate_llm_payload(task: str, payload: dict[str, Any], response_schema: dict[str, Any] | None = None) -> None:
+    if task == "classify":
+        require_keys(payload, ["category", "confidence"])
+        validate_confidence(payload["confidence"])
+        return
+    if task == "extract":
+        fields = payload.get("fields")
+        if not isinstance(fields, dict):
+            raise LLMError("extract response must include fields object")
+        expected_fields = set((response_schema or {}).get("properties", {}).keys())
+        if expected_fields and not set(fields).issubset(expected_fields):
+            unknown = sorted(set(fields) - expected_fields)
+            raise LLMError(f"extract response included unknown fields: {unknown}")
+        for field_name, field_payload in fields.items():
+            if not isinstance(field_payload, dict):
+                raise LLMError(f"{field_name} must be an object")
+            require_keys(field_payload, ["value", "confidence", "source_identifier", "status"])
+            validate_confidence(field_payload["confidence"])
+            if field_payload["status"] != "extracted":
+                raise LLMError(f"{field_name}.status must be extracted")
+        return
+    if task == "reconcile":
+        require_keys(payload, ["value", "confidence", "reason"])
+        validate_confidence(payload["confidence"])
+        return
+    if task == "semantic_validate":
+        require_keys(payload, ["valid", "issues", "confidence_delta"])
+        if not isinstance(payload["valid"], bool):
+            raise LLMError("semantic_validate.valid must be boolean")
+        if not isinstance(payload["issues"], list):
+            raise LLMError("semantic_validate.issues must be a list")
+        return
+    if task == "enrich":
+        require_keys(payload, ["enriched_fields"])
+        if not isinstance(payload["enriched_fields"], dict):
+            raise LLMError("enrich.enriched_fields must be an object")
+
+
+def require_keys(payload: dict[str, Any], keys: list[str]) -> None:
+    missing = [key for key in keys if key not in payload]
+    if missing:
+        raise LLMError(f"Missing required JSON keys: {missing}")
+
+
+def validate_confidence(value: Any) -> None:
+    if not isinstance(value, int | float) or value < 0 or value > 1:
+        raise LLMError("confidence must be a number between 0 and 1")

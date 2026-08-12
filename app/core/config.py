@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
     openai_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    groq_model: str = "llama-3.3-70b-versatile"
+    openai_model: str = "gpt-4o-mini"
     llm_timeout_seconds: int = 30
     scraper_timeout_seconds: int = 15
     max_source_chars: int = Field(default=120_000, ge=1_000)
