@@ -71,3 +71,30 @@ class BatchRead(BaseModel):
     failed_items: int
 
     model_config = {"from_attributes": True}
+
+
+class ReviewItemRead(BaseModel):
+    id: str
+    product_id: str
+    field_name: str | None
+    reason: str
+    severity: str
+    status: str
+    payload: dict[str, Any] | None
+
+    model_config = {"from_attributes": True}
+
+
+class ReviewItemUpdate(BaseModel):
+    status: Literal["open", "resolved", "dismissed"] | None = None
+    severity: Literal["low", "medium", "high"] | None = None
+    reason: str | None = Field(default=None, min_length=1)
+    payload: dict[str, Any] | None = None
+
+
+class FieldCorrectionRequest(BaseModel):
+    value: Any | None = None
+    unit: str | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    evidence: str | None = None
+    resolve_reviews: bool = True

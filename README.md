@@ -212,6 +212,49 @@ Returns product detail with extracted fields, validation state, confidence, comp
 
 `GET /api/v1/products/{product_id}`
 
+### List Review Items
+
+`GET /api/v1/reviews?status=open&severity=high&product_id={product_id}&limit=100`
+
+Returns review items for low-confidence values, missing required fields, conflicts, and validation failures.
+
+### Get Review Item
+
+`GET /api/v1/reviews/{review_id}`
+
+### Update Review Item
+
+`PATCH /api/v1/reviews/{review_id}`
+
+```json
+{
+  "status": "resolved",
+  "severity": "medium",
+  "reason": "Reviewer accepted corrected value",
+  "payload": {
+    "reviewed_by": "catalog-ops"
+  }
+}
+```
+
+Allowed review statuses: `open`, `resolved`, `dismissed`.
+
+### Correct Product Field
+
+`PATCH /api/v1/products/{product_id}/fields/{field_name}`
+
+```json
+{
+  "value": "120",
+  "unit": "GPM",
+  "confidence": 0.99,
+  "evidence": "Reviewer confirmed from manufacturer datasheet",
+  "resolve_reviews": true
+}
+```
+
+This creates or updates the canonical extracted field, marks it `validated`, records `reviewer_corrected` in validation metadata, and resolves open review items for the same product field when `resolve_reviews` is true.
+
 ### Create Batch
 
 `POST /api/v1/batches`
@@ -238,5 +281,5 @@ Returns product detail with extracted fields, validation state, confidence, comp
 Latest local run:
 
 ```text
-9 passed
+14 passed
 ```

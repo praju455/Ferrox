@@ -1,11 +1,23 @@
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
-from sqlalchemy import text
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, UploadFile
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db import get_db
-from app.models import BatchItem, BatchJob, Product
-from app.schemas import BatchCreateRequest, BatchRead, PipelineRunRequest, ProductDetail, ProductRead, TextIngestionRequest, UrlIngestionRequest
+from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, Product, ReviewItem, ReviewStatus
+from app.schemas import (
+    BatchCreateRequest,
+    BatchRead,
+    ExtractedFieldRead,
+    FieldCorrectionRequest,
+    PipelineRunRequest,
+    ProductDetail,
+    ProductRead,
+    ReviewItemRead,
+    ReviewItemUpdate,
+    TextIngestionRequest,
+    UrlIngestionRequest,
+)
 from app.services.ingestion import IngestionService
 from app.services.pipeline import ProductPipeline
 
@@ -71,6 +83,90 @@ def get_product(product_id: str, db: Session = Depends(get_db)) -> Product:
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
+
+
+@router.get("/reviews", response_model=list[ReviewItemRead])
+def list_reviews(
+    status: ReviewStatus | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    product_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[ReviewItem]:
+    query = select(ReviewItem)
+    if status is not None:
+        query = query.where(ReviewItem.status == status)
+    if severity is not None:
+        query = query.where(ReviewItem.severity == severity)
+    if product_id is not None:
+        query = query.where(ReviewItem.product_id == product_id)
+    return list(db.scalars(query.order_by(ReviewItem.created_at.desc()).limit(limit)))
+
+
+@router.get("/reviews/{review_id}", response_model=ReviewItemRead)
+def get_review(review_id: str, db: Session = Depends(get_db)) -> ReviewItem:
+    review = db.get(ReviewItem, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    return review
+
+
+@router.patch("/reviews/{review_id}", response_model=ReviewItemRead)
+def update_review(review_id: str, payload: ReviewItemUpdate, db: Session = Depends(get_db)) -> ReviewItem:
+    review = db.get(ReviewItem, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        if key == "status" and value is not None:
+            value = ReviewStatus(value)
+        setattr(review, key, value)
+    db.commit()
+    db.refresh(review)
+    return review
+
+
+@router.patch("/products/{product_id}/fields/{field_name}", response_model=ExtractedFieldRead)
+def correct_field(product_id: str, field_name: str, payload: FieldCorrectionRequest, db: Session = Depends(get_db)) -> ExtractedField:
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    field = db.scalar(select(ExtractedField).where(ExtractedField.product_id == product_id, ExtractedField.field_name == field_name))
+    if not field:
+        field = ExtractedField(
+            product_id=product_id,
+            source_id=None,
+            field_name=field_name,
+            value=payload.value,
+            unit=payload.unit,
+            confidence=payload.confidence,
+            status=FieldStatus.validated,
+            evidence=payload.evidence,
+            alternatives=[],
+            validation={"reviewer_corrected": True},
+        )
+        db.add(field)
+    else:
+        field.value = payload.value
+        field.unit = payload.unit
+        field.confidence = payload.confidence
+        field.status = FieldStatus.validated
+        field.evidence = payload.evidence or field.evidence
+        field.validation = {**(field.validation or {}), "reviewer_corrected": True}
+    if payload.resolve_reviews:
+        reviews = db.scalars(
+            select(ReviewItem).where(
+                ReviewItem.product_id == product_id,
+                ReviewItem.field_name == field_name,
+                ReviewItem.status == ReviewStatus.open,
+            )
+        )
+        for review in reviews:
+            review.status = ReviewStatus.resolved
+    ProductPipeline(db).score_and_queue(product)
+    db.commit()
+    db.refresh(field)
+    return field
 
 
 @router.post("/batches", response_model=BatchRead)
