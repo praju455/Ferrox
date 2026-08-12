@@ -1,28 +1,27 @@
 # Ferrox Product Intelligence UI
 
-This is the selected UI/UX direction for the Ferrox backend: an operational SaaS dashboard for catalog operations teams.
-
-It is placed inside the UI catalog repo as a dedicated project so the original template catalog remains untouched.
+This is the Next.js + TypeScript frontend direction for Ferrox. It starts with a high-impact landing page and a small live backend check, while keeping the API contract visible for the future product UI.
 
 ## Why This Direction
 
-The catalog contains several relevant dashboard/SaaS references, especially AI admin, developer dashboard, operational SaaS, infrastructure dashboard, and cyber/security dashboard styles. For Ferrox, the strongest fit is not a marketing landing page or a neon game-style UI. The product needs a dense, calm, high-trust command center where users can:
+The downloaded UI catalog is used only as visual reference. The actual Ferrox frontend lives here and is pushed to the Ferrox repo. The direction borrows from strong SaaS/product-intelligence landing pages: dark technical atmosphere, sharp product mockups, clear proof points, and a visible backend contract.
 
-- ingest source evidence
-- run extraction
-- see pipeline progress
-- inspect source conflicts
-- correct fields
-- monitor batches
-- understand backend API state
+The page is designed to explain the platform before the fuller app is built:
+
+- source ingestion across PDF, URL, and raw text
+- category-aware extraction schemas
+- explicit reconciliation for conflicts
+- validation, enrichment, confidence, completeness, and review queue
+- backend API readiness
 
 ## Run
 
 ```bash
+npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+Open `http://127.0.0.1:3000`.
 
 ## Backend Contract
 
@@ -35,4 +34,4 @@ The UI is wired to the current Ferrox API shape:
 - `GET /api/v1/batches`
 - `PATCH /api/v1/products/{product_id}/fields/{field_name}`
 
-If `INTERNAL_API_KEY` is configured on the backend, enter it in the UI’s Internal key field.
+If `INTERNAL_API_KEY` is configured on the backend, enter it in the UI's Internal key field.

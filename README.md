@@ -2,7 +2,7 @@
 
 Backend and frontend for the **Industrial Product Intelligence Platform**: a system that converts scattered industrial product information from PDFs, URLs, and raw catalog text into traceable, validated, enriched structured product data.
 
-The backend lives in `app/`. The frontend UI/UX design lives in `frontend/`.
+The backend lives in `app/`. The frontend landing page and future app shell live in `frontend/` as a Next.js + TypeScript project.
 
 ## Backend Status
 
@@ -62,10 +62,11 @@ To run the frontend UI:
 
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
 
-The frontend defaults to `http://127.0.0.1:8000/api/v1` for the backend API.
+The frontend runs at `http://127.0.0.1:3000` and defaults to `http://127.0.0.1:8000/api/v1` for the backend API.
 
 ## Environment
 
@@ -112,7 +113,7 @@ Authorization: Bearer your-key
 
 ```mermaid
 flowchart TD
-    UI["Future frontend / catalog ops UI"] --> API["FastAPI backend"]
+    UI["Next.js frontend\nlanding page + future catalog ops UI"] --> API["FastAPI backend"]
     API --> DB[("PostgreSQL")]
     API --> Ingest["Ingestion service"]
     Ingest --> PDF["PDF parser\nPyMuPDF"]
