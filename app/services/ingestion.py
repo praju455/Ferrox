@@ -1,14 +1,18 @@
 import ipaddress
+import logging
 import socket
 from urllib.parse import urlparse
 
-import fitz
+import pymupdf
 import requests
 from bs4 import BeautifulSoup
 
 from app.core.config import Settings
 from app.models import Source, SourceType
 from app.services.storage import ObjectStorage, source_object_key
+
+
+logger = logging.getLogger("ferrox.ingestion")
 
 
 def authority_rank(source_type: SourceType) -> int:
@@ -61,9 +65,22 @@ class IngestionService:
         if not content.startswith(b"%PDF"):
             raise ValueError("Uploaded content is not a valid PDF")
         chunks: list[str] = []
-        with fitz.open(stream=content, filetype="pdf") as doc:
-            for page in doc:
-                chunks.append(page.get_text("text"))
+        table_count = 0
+        with pymupdf.open(stream=content, filetype="pdf") as doc:
+            for page_number, page in enumerate(doc, start=1):
+                page_parts = [f"--- Page {page_number} ---", page.get_text("text", sort=True).strip()]
+                try:
+                    tables = page.find_tables()
+                    for table_number, table in enumerate(tables.tables, start=1):
+                        rows = table.extract()
+                        if not rows:
+                            continue
+                        table_count += 1
+                        page_parts.append(f"--- Page {page_number} Table {table_number} ---")
+                        page_parts.extend(self._format_table_row(row) for row in rows)
+                except Exception:
+                    logger.warning("PDF table detection failed on page %s", page_number, exc_info=True)
+                chunks.append("\n".join(part for part in page_parts if part))
         if self.storage is None:
             raise RuntimeError("PDF ingestion requires object storage")
         stored = self.storage.put_bytes(source_object_key(product_id, filename), content, "application/pdf")
@@ -72,7 +89,7 @@ class IngestionService:
             SourceType.pdf,
             filename,
             "\n".join(chunks),
-            {"parser": "pymupdf", "pages": len(chunks)},
+            {"parser": "pymupdf", "pages": len(chunks), "tables": table_count, "layout_preserved": True},
         )
         source.storage_backend = stored.backend
         source.storage_key = stored.key
@@ -80,6 +97,14 @@ class IngestionService:
         source.content_length = stored.content_length
         source.content_sha256 = stored.sha256
         return source
+
+    @staticmethod
+    def _format_table_row(row: list[str | None]) -> str:
+        cells = [
+            "; ".join(" ".join(line.split()) for line in (cell or "").splitlines() if line.strip())
+            for cell in row
+        ]
+        return " | ".join(cells)
 
     def _source(self, product_id: str, source_type: SourceType, identifier: str, text: str, metadata: dict) -> Source:
         return Source(

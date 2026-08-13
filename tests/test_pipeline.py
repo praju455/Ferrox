@@ -33,3 +33,21 @@ def test_low_confidence_missing_values_create_review_items(db_session):
     ProductPipeline(db_session).run(product)
 
     assert product.reviews
+
+
+def test_pipeline_reconciles_structured_values_from_multiple_sources(db_session):
+    product = Product(name="Boyser AMP-13B")
+    db_session.add(product)
+    db_session.flush()
+    ingestion = IngestionService(get_settings())
+    first = "Model: AMP-13B. Product type: Industrial peristaltic pump. Flow rate 0.038 L/rev. Available hoses: NR, NBR."
+    second = "Model: AMP-13B. Product type: Industrial peristaltic pump. Flow rate 0.038 L/rev. Available hoses: NR, NBR, EPDM."
+    db_session.add(ingestion.from_text(product.id, first, "datasheet"))
+    db_session.add(ingestion.from_text(product.id, second, "catalog"))
+    db_session.commit()
+
+    ProductPipeline(db_session).run(product)
+
+    hoses = next(field for field in product.fields if field.field_name == "available_hoses")
+    assert hoses.value == ["NR", "NBR"]
+    assert len(hoses.alternatives) == 2

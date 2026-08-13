@@ -373,6 +373,22 @@ function Metric({ label, value, detail, alert = false }: { label: string; value:
 function Progress({ value }: { value: number }) { return <div className="progress"><i style={{ width: `${Math.max(2, Math.round(value * 100))}%` }} /><span>{Math.round(value * 100)}%</span></div>; }
 function Status({ value }: { value: string }) { return <em className={`status-chip ${value.replaceAll("_", "-")}`}>{value.replaceAll("_", " ")}</em>; }
 function Empty({ text }: { text: string }) { return <div className="empty-state">{text}</div>; }
-function displayValue(value: unknown) { return value === null || value === undefined || value === "" ? "Not found" : typeof value === "object" ? JSON.stringify(value) : String(value); }
+function displayValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "Not found";
+  if (Array.isArray(value)) {
+    if (value.every((item) => typeof item !== "object")) return value.join(", ");
+    return value.map((item) => {
+      if (item && typeof item === "object" && "pressure" in item && "torque" in item) {
+        const row = item as { pressure?: { value?: unknown; unit?: unknown }; torque?: { value?: unknown; unit?: unknown } };
+        return `${row.pressure?.value ?? "?"} ${row.pressure?.unit ?? ""} -> ${row.torque?.value ?? "?"} ${row.torque?.unit ?? ""}`;
+      }
+      return JSON.stringify(item);
+    }).join("; ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${key}: ${String(item)}`).join(", ");
+  }
+  return String(value);
+}
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : "Request failed"; }
 async function waitForJob(jobId: string, onDone: () => Promise<void>) { for (let attempt = 0; attempt < 30; attempt += 1) { await new Promise((resolve) => setTimeout(resolve, 1000)); const job = await apiFetch<PipelineJob>(`/pipeline/jobs/${jobId}`); if (["completed", "failed"].includes(job.status)) { await onDone(); return; } } }

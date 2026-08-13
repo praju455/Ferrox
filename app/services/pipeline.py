@@ -1,3 +1,4 @@
+import json
 from collections import defaultdict
 from statistics import mean
 from typing import Any
@@ -70,7 +71,13 @@ class ProductPipeline:
             )
         }
         for source in sources:
-            prompt = f"Category: {product.category}\nSource ID: {source.id}\n\n{source.raw_content}"
+            prompt = (
+                f"Category: {product.category}\nSource ID: {source.id}\n"
+                "Extract every schema field explicitly supported by the source. Preserve table row relationships "
+                "as arrays of objects and preserve lists as arrays. Do not convert pressure into head, do not collapse "
+                "a pressure-to-torque table into separate unrelated values, and do not infer absent specifications.\n\n"
+                f"{source.raw_content}"
+            )
             result = self.llm.complete_json(LLMRequest(task="extract", prompt=prompt, response_schema=product.dynamic_schema))
             for field_name, payload in result.get("fields", {}).items():
                 candidate = {
@@ -99,9 +106,9 @@ class ProductPipeline:
                     existing_by_name[field_name] = existing
                 else:
                     alternatives = existing.alternatives or []
-                    candidate_key = (candidate["source_id"], candidate["value"], candidate["unit"])
+                    candidate_key = (candidate["source_id"], self._value_key(candidate["value"]), candidate["unit"])
                     existing_keys = {
-                        (item.get("source_id"), item.get("value"), item.get("unit"))
+                        (item.get("source_id"), self._value_key(item.get("value")), item.get("unit"))
                         for item in alternatives
                     }
                     if candidate_key not in existing_keys:
@@ -251,3 +258,7 @@ class ProductPipeline:
         if any(token in field.field_name for token in ["flow_rate", "head", "power", "diameter", "length", "voltage", "speed"]) and field.value is None:
             issues.append("numeric_field_missing")
         return issues
+
+    @staticmethod
+    def _value_key(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)

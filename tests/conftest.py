@@ -5,7 +5,18 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import create_app
+from app.core.config import get_settings
 from app.db import Base, get_db
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_settings(monkeypatch):
+    monkeypatch.setenv("FERROX_DISABLE_ENV_FILE", "1")
+    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture()

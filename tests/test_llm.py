@@ -1,5 +1,6 @@
 import pytest
 
+from app.services.catalog_schemas import schema_for_category
 from app.services.llm import (
     BaseHTTPJSONProvider,
     GeminiProvider,
@@ -7,6 +8,7 @@ from app.services.llm import (
     LLMRequest,
     OpenAICompatibleProvider,
     parse_json_object,
+    validate_llm_payload,
 )
 
 
@@ -102,3 +104,18 @@ def test_openai_compatible_provider_uses_json_object_mode(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer groq-key"
     assert captured["json"]["model"] == "model-x"
     assert captured["json"]["response_format"] == {"type": "json_object"}
+
+
+def test_extraction_validation_enforces_structured_field_value_schema():
+    payload = {
+        "fields": {
+            "pressure_torque": {
+                "value": [{"pressure": "8 bar", "torque": "30 Nm"}],
+                "confidence": 0.9,
+                "source_identifier": "datasheet",
+                "status": "extracted",
+            }
+        }
+    }
+    with pytest.raises(LLMError, match="pressure_torque.value"):
+        validate_llm_payload("extract", payload, schema_for_category("Industrial Pump"))

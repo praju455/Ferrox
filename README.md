@@ -34,6 +34,7 @@ Implemented stages:
 20. User accounts with expiring JWT access tokens, Argon2 password hashing, reviewer/admin authorization, inactive-account enforcement, and service API-key compatibility.
 21. CI for unit tests, real PostgreSQL migrations/constraints, Next.js production builds, container builds, and manually triggered live Gemini/Groq/OpenAI integration tests.
 22. Container deployment with release migrations, API/worker separation, Prometheus monitoring, automated encrypted PostgreSQL dumps, retention pruning, and guarded restore tooling.
+23. Table-aware PDF extraction with page/table boundaries, typed pump subtype fields, preserved pressure-to-torque rows, component construction details, dimensions, and strict nested-value validation.
 
 ## Local Setup
 
@@ -180,7 +181,7 @@ flowchart TD
     API --> DB[("PostgreSQL")]
     Migration["Alembic migrations"] --> DB
     API --> Ingest["Ingestion service"]
-    Ingest --> PDF["PDF parser\nPyMuPDF"]
+    Ingest --> PDF["Table-aware PDF parser\nPyMuPDF pages + row/column relationships"]
     PDF --> Objects[("Private object storage\nlocal / S3 / MinIO")]
     Objects --> SourceMeta["Checksum + media metadata\nstorage key on Source"]
     SourceMeta --> DB
@@ -196,7 +197,7 @@ flowchart TD
     API --> Pipeline
     Pipeline --> Classify["Category classification"]
     Classify --> Schemas["Dynamic schema selector\npump / bearing / motor / fastener"]
-    Schemas --> Extract["Structured extraction\nvalue + confidence + source + status + evidence"]
+    Schemas --> Extract["Typed structured extraction\nscalars + lists + relational table rows + evidence"]
     Extract --> Reconcile["Multi-source reconciliation\nconflict_resolved + alternatives"]
     Reconcile --> Validate["Rule + semantic validation"]
     Validate --> Enrich["Gemini Google Search grounding\none missing field per cited query"]

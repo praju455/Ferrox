@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -80,4 +81,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    env_file = None if os.getenv("FERROX_DISABLE_ENV_FILE") == "1" else ".env"
+    return Settings(_env_file=env_file)
