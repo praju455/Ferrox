@@ -66,9 +66,14 @@ class IngestionService:
             raise ValueError("Uploaded content is not a valid PDF")
         chunks: list[str] = []
         table_count = 0
+        ocr_pages: list[int] = []
+        ocr_failures: list[dict[str, str | int]] = []
+        has_text = False
         with pymupdf.open(stream=content, filetype="pdf") as doc:
             for page_number, page in enumerate(doc, start=1):
-                page_parts = [f"--- Page {page_number} ---", page.get_text("text", sort=True).strip()]
+                page_text = self._extract_page_text(page, page_number, ocr_pages, ocr_failures)
+                has_text = has_text or bool(page_text)
+                page_parts = [f"--- Page {page_number} ---", page_text]
                 try:
                     tables = page.find_tables()
                     for table_number, table in enumerate(tables.tables, start=1):
@@ -81,6 +86,10 @@ class IngestionService:
                 except Exception:
                     logger.warning("PDF table detection failed on page %s", page_number, exc_info=True)
                 chunks.append("\n".join(part for part in page_parts if part))
+        if not has_text:
+            if ocr_failures:
+                raise ValueError("PDF contains no extractable text and OCR is unavailable or failed")
+            raise ValueError("PDF contains no extractable text")
         if self.storage is None:
             raise RuntimeError("PDF ingestion requires object storage")
         stored = self.storage.put_bytes(source_object_key(product_id, filename), content, "application/pdf")
@@ -89,7 +98,14 @@ class IngestionService:
             SourceType.pdf,
             filename,
             "\n".join(chunks),
-            {"parser": "pymupdf", "pages": len(chunks), "tables": table_count, "layout_preserved": True},
+            {
+                "parser": "pymupdf",
+                "pages": len(chunks),
+                "tables": table_count,
+                "layout_preserved": True,
+                "ocr_pages": ocr_pages,
+                "ocr_failures": ocr_failures,
+            },
         )
         source.storage_backend = stored.backend
         source.storage_key = stored.key
@@ -97,6 +113,31 @@ class IngestionService:
         source.content_length = stored.content_length
         source.content_sha256 = stored.sha256
         return source
+
+    def _extract_page_text(
+        self,
+        page,
+        page_number: int,
+        ocr_pages: list[int],
+        ocr_failures: list[dict[str, str | int]],
+    ) -> str:
+        page_text = page.get_text("text", sort=True).strip()
+        if not self.settings.enable_pdf_ocr or len(page_text) >= self.settings.pdf_ocr_min_text_chars:
+            return page_text
+        try:
+            textpage = page.get_textpage_ocr(
+                language=self.settings.pdf_ocr_language,
+                dpi=self.settings.pdf_ocr_dpi,
+                full=True,
+            )
+            ocr_text = page.get_text("text", textpage=textpage, sort=True).strip()
+            if len(ocr_text) > len(page_text):
+                ocr_pages.append(page_number)
+                return ocr_text
+        except Exception as exc:
+            logger.warning("PDF OCR failed on page %s", page_number, exc_info=True)
+            ocr_failures.append({"page": page_number, "error": str(exc)[:300]})
+        return page_text
 
     @staticmethod
     def _format_table_row(row: list[str | None]) -> str:

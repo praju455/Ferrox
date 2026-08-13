@@ -168,7 +168,7 @@ class UserRead(BaseModel):
 
 class PipelineRunRequest(BaseModel):
     source_ids: list[str] | None = None
-    stages: list[Literal["classify", "extract", "reconcile", "validate", "enrich", "score"]] | None = None
+    stages: list[Literal["index", "classify", "extract", "reconcile", "validate", "enrich", "score", "deduplicate"]] | None = None
 
 
 class PipelineJobRead(BaseModel):
@@ -212,6 +212,73 @@ class BatchItemRead(BaseModel):
 
 class BatchDetail(BatchRead):
     items: list[BatchItemRead] = Field(default_factory=list)
+
+
+class CatalogImportRead(BatchDetail):
+    imported_rows: int
+    filename: str
+
+
+class SemanticSearchHitRead(BaseModel):
+    chunk_id: str
+    source_id: str
+    product_id: str
+    product_name: str
+    source_identifier: str
+    content: str
+    score: float
+
+
+class ReindexRead(BaseModel):
+    indexed_products: int
+    indexed_sources: int
+    indexed_chunks: int
+
+
+class RAGQueryRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=2_000)
+    product_id: str | None = None
+    limit: int = Field(default=8, ge=1, le=25)
+
+
+class RAGCitationRead(BaseModel):
+    url: str
+    title: str | None
+    cited_text: str | None
+
+
+class RAGAnswerRead(BaseModel):
+    answer: str
+    citations: list[RAGCitationRead]
+    matches: list[SemanticSearchHitRead]
+
+
+class AnalyticsBreakdownRead(BaseModel):
+    label: str
+    count: int
+
+
+class ProviderAnalyticsRead(BaseModel):
+    provider: str
+    runs: int
+    success_rate: float
+    average_latency_ms: float
+    tokens: int
+    estimated_cost_usd: float
+
+
+class CatalogAnalyticsRead(BaseModel):
+    generated_at: datetime
+    totals: dict[str, int]
+    quality: dict[str, float]
+    categories: list[AnalyticsBreakdownRead]
+    source_types: list[AnalyticsBreakdownRead]
+    field_statuses: list[AnalyticsBreakdownRead]
+    review_severities: list[AnalyticsBreakdownRead]
+    batch_statuses: list[AnalyticsBreakdownRead]
+    completeness_bands: list[AnalyticsBreakdownRead]
+    validation_issues: list[AnalyticsBreakdownRead]
+    providers: list[ProviderAnalyticsRead]
 
 
 class BatchProcessRequest(BaseModel):

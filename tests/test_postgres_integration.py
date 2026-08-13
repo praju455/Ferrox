@@ -22,8 +22,10 @@ def test_postgres_migrations_and_constraints():
         "citations",
         "llm_runs",
         "users",
+        "source_chunks",
     }
     assert expected.issubset(set(inspector.get_table_names()))
     assert any(index["unique"] for index in inspector.get_indexes("users") if index["name"] == "ix_users_email")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT current_database()")) == "ferrox_test"
+        assert connection.scalar(text("SELECT COUNT(*) FROM pg_extension WHERE extname = 'vector'")) == 1

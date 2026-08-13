@@ -184,6 +184,10 @@ class MockIndustrialProvider(LLMProvider):
             return {"valid": True, "issues": [], "confidence_delta": 0.0}
         if request.task == "enrich":
             return {"enriched_fields": {}, "notes": ["No external enrichment performed in mock mode."]}
+        if request.task == "internal_enrich":
+            return {"value": None, "unit": None, "confidence": 0.0, "evidence": None, "chunk_ids": []}
+        if request.task == "rag_answer":
+            return {"answer": None, "chunk_ids": []}
         raise LLMError(f"Unsupported task: {request.task}")
 
     def _extract_field(self, field: str, text: str) -> dict[str, Any]:
@@ -440,6 +444,8 @@ def response_contract_for_task(task: str) -> str:
         "reconcile": '{"value": "...", "unit": null, "source_id": "...", "confidence": 0.0, "reason": "..."}',
         "semantic_validate": '{"valid": true, "issues": [], "confidence_delta": 0.0}',
         "enrich": '{"enriched_fields": {}, "notes": []}',
+        "internal_enrich": '{"value": null, "unit": null, "confidence": 0.0, "evidence": null, "chunk_ids": ["chunk-id"]}',
+        "rag_answer": '{"answer": null, "chunk_ids": ["chunk-id"]}',
     }
     return contracts.get(task, "{}")
 
@@ -482,6 +488,19 @@ def validate_llm_payload(task: str, payload: dict[str, Any], response_schema: di
         require_keys(payload, ["enriched_fields"])
         if not isinstance(payload["enriched_fields"], dict):
             raise LLMError("enrich.enriched_fields must be an object")
+        return
+    if task == "internal_enrich":
+        require_keys(payload, ["value", "confidence", "chunk_ids"])
+        validate_confidence(payload["confidence"])
+        if not isinstance(payload["chunk_ids"], list) or not all(isinstance(item, str) for item in payload["chunk_ids"]):
+            raise LLMError("internal_enrich.chunk_ids must be a list of strings")
+        return
+    if task == "rag_answer":
+        require_keys(payload, ["answer", "chunk_ids"])
+        if payload["answer"] is not None and not isinstance(payload["answer"], str):
+            raise LLMError("rag_answer.answer must be a string or null")
+        if not isinstance(payload["chunk_ids"], list) or not all(isinstance(item, str) for item in payload["chunk_ids"]):
+            raise LLMError("rag_answer.chunk_ids must be a list of strings")
 
 
 def require_keys(payload: dict[str, Any], keys: list[str]) -> None:

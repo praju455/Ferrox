@@ -6,7 +6,7 @@ The backend lives in `app/`. The frontend lives in `frontend/` as a Next.js + Ty
 
 ## Frontend Direction
 
-The landing page uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. The connected `/workspace` adds product/source operations, asynchronous pipeline tracking, citation inspection, human review, batch staging, and LLM telemetry. `/login` handles JWT access. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
+The landing page uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. The connected `/workspace` adds product/source operations, asynchronous pipeline tracking, citation inspection, human review, catalog-file import, semantic catalog retrieval, quality analytics, report export, batch staging, and LLM telemetry. `/login` handles JWT access. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
 
 ## Backend Status
 
@@ -35,12 +35,23 @@ Implemented stages:
 21. CI for unit tests, real PostgreSQL migrations/constraints, Next.js production builds, container builds, and manually triggered live Gemini/Groq/OpenAI integration tests.
 22. Container deployment with release migrations, API/worker separation, Prometheus monitoring, automated encrypted PostgreSQL dumps, retention pruning, and guarded restore tooling.
 23. Table-aware PDF extraction with page/table boundaries, typed pump subtype fields, preserved pressure-to-torque rows, component construction details, dimensions, and strict nested-value validation.
+24. Adaptive OCR for scanned or image-only PDF pages using PyMuPDF's Tesseract-backed OCR path, with page-level OCR diagnostics and native-text-first cost control.
+25. CSV/TSV/semicolon/pipe catalog imports that map explicit text or arbitrary supplier columns into queued product batches with row limits and source lineage.
+26. Bounded overlapping document chunks for large-source classification, extraction, embeddings, and chunk-level extraction provenance.
+27. Pint-backed unit detection and canonical normalization for flow, pressure, power, dimensions, loads, voltage, speed, and torque.
+28. Category-specific engineering range and cross-field validation, including relational pressure/torque table checks and bearing geometry checks.
+29. Formal confidence-and-authority weighted voting that groups unit-equivalent values, counts each source once, preserves vote audits, and uses the LLM only for close ties.
+30. PostgreSQL pgvector source-chunk embeddings with HNSW cosine search, Gemini embeddings when configured, deterministic local embeddings for development, semantic search, and duplicate detection.
+31. Internal catalog RAG that accepts only retrieved chunk IDs as citations, tries catalog evidence before external grounded enrichment, and rejects unsupported answers.
+32. Catalog analytics and CSV reporting for quality, coverage, validation, reviews, batches, categories, field status, and provider performance, connected to the Next.js workspace.
 
 ## Local Setup
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
+# macOS host development only; Docker installs this automatically
+brew install tesseract
 cp .env.example .env
 docker compose up -d postgres minio minio-init
 .venv/bin/python -m alembic upgrade head
@@ -121,6 +132,12 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `*_INPUT_COST_PER_MILLION` / `*_OUTPUT_COST_PER_MILLION` | Deployment-owned price inputs used for estimated cost telemetry. |
 | `SCRAPER_TIMEOUT_SECONDS` | URL scrape timeout. |
 | `MAX_SOURCE_CHARS` | Maximum retained source text per source. |
+| `DOCUMENT_CHUNK_CHARS` / `DOCUMENT_CHUNK_OVERLAP_CHARS` | Extraction/classification chunk size and overlap. |
+| `ENABLE_PDF_OCR` / `PDF_OCR_*` | Adaptive Tesseract OCR switch, language, resolution, and native-text threshold. |
+| `MAX_CATALOG_UPLOAD_BYTES` / `MAX_CATALOG_ROWS` | Catalog-file size and row limits. |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | Gemini embedding model and fixed pgvector width. |
+| `EMBEDDING_CHUNK_CHARS` / `EMBEDDING_CHUNK_OVERLAP_CHARS` | Search-index chunk size and overlap. |
+| `DUPLICATE_SIMILARITY_THRESHOLD` | Minimum semantic similarity used to flag possible duplicates. |
 | `MAX_REQUEST_BYTES` | Maximum accepted HTTP request size. Default: 25 MB. |
 | `MAX_PDF_UPLOAD_BYTES` | Maximum accepted PDF payload. Default: 20 MB. |
 | `OBJECT_STORAGE_BACKEND` | `local` for filesystem development or `s3` for S3/MinIO. |
@@ -165,7 +182,8 @@ Production mode (`APP_ENV=production`) refuses to start without `JWT_SECRET`. Ev
 ```mermaid
 flowchart TD
     UI["Next.js frontend\nlanding + login + operations workspace"] --> Inspector["Interactive source inspector\nPDF / URL / text"]
-    UI --> Workspace["Connected workspace\nproducts / reviews / batches / operations"]
+    UI --> Workspace["Connected workspace\nproducts / reviews / batches / analytics / operations"]
+    Workspace --> Intelligence["Catalog intelligence\nsemantic search + RAG + reports"]
     Workspace --> Guard
     UI --> ReviewUI["Conflict review preview"]
     UI --> HealthUI["Live backend health check"]
@@ -176,37 +194,49 @@ flowchart TD
     Auth --> API["FastAPI backend"]
     Auth --> Users[("User accounts\nArgon2 password hashes")]
     API --> Products["Product collection API\ncreate + list + search + delete"]
-    Products --> SourceAPI["Product source API\nattach + list PDF / URL / text"]
+    Products --> SourceAPI["Product source API\nattach + list PDF / URL / text / CSV catalog"]
     SourceAPI --> Ingest
     API --> DB[("PostgreSQL")]
     Migration["Alembic migrations"] --> DB
     API --> Ingest["Ingestion service"]
-    Ingest --> PDF["Table-aware PDF parser\nPyMuPDF pages + row/column relationships"]
+    Ingest --> PDF["Adaptive PDF parser\nPyMuPDF native text + tables + Tesseract OCR"]
     PDF --> Objects[("Private object storage\nlocal / S3 / MinIO")]
     Objects --> SourceMeta["Checksum + media metadata\nstorage key on Source"]
     SourceMeta --> DB
     Ingest --> URL["URL scraper\nrequests + BeautifulSoup"]
     Ingest --> Text["Raw text parser"]
+    Ingest --> CSV["CSV / TSV catalog importer\ncolumn mapping + queued rows"]
     Ingest --> Sources["Raw sources\nsource_id + product_id + authority rank"]
     Sources --> DB
+    Sources --> Chunk["Bounded overlapping chunks\ncharacter offsets + chunk lineage"]
 
     API --> JobQueue["Persistent pipeline jobs\nqueued / running / completed / failed"]
     JobQueue --> DB
     Worker["Pipeline worker\nrow claim with skip locked"] --> JobQueue
-    Worker --> Pipeline["Selectable product pipeline\nclassify / extract / reconcile / validate / enrich / score"]
+    Worker --> Pipeline["Selectable product pipeline\nindex / classify / extract / reconcile / validate / enrich / score / deduplicate"]
     API --> Pipeline
     Pipeline --> Classify["Category classification"]
     Classify --> Schemas["Dynamic schema selector\npump / bearing / motor / fastener"]
-    Schemas --> Extract["Typed structured extraction\nscalars + lists + relational table rows + evidence"]
-    Extract --> Reconcile["Multi-source reconciliation\nconflict_resolved + alternatives"]
-    Reconcile --> Validate["Rule + semantic validation"]
-    Validate --> Enrich["Gemini Google Search grounding\none missing field per cited query"]
+    Schemas --> Extract["Chunked typed extraction\nscalars + lists + relational rows + evidence"]
+    Extract --> Units["Pint unit detection\ncanonical engineering units"]
+    Units --> Reconcile["Weighted source voting\nunit equivalence + LLM tie break"]
+    Reconcile --> Validate["Engineering ranges + cross-field rules\nLLM semantic validation"]
+    Validate --> InternalRAG["Internal catalog RAG\nretrieved chunk citations only"]
+    InternalRAG --> Enrich["External Gemini Search fallback\none missing field per cited query"]
     Enrich --> Citations["Citation records\nURL + title + cited text"]
     Citations --> DB
     Enrich --> Score["Confidence + completeness scoring"]
     Score --> Review["Review queue"]
     Score --> DB
     Review --> DB
+
+    Chunk --> Embed["Gemini embedding-001\nlocal deterministic fallback"]
+    Embed --> Vector[("PostgreSQL + pgvector\nHNSW cosine index")]
+    Vector --> Search["Semantic search"]
+    Search --> InternalRAG
+    Search --> Dedupe["Duplicate detection"]
+    Dedupe --> Review
+    Vector --> DB
 
     Pipeline --> LLM["LLM client"]
     LLM --> JSON["JSON parser + contract validator\nretry malformed outputs"]
@@ -227,6 +257,10 @@ flowchart TD
     Worker --> BatchQueue
     BatchQueue --> Batch["Worker-side source ingestion\nretryable per item"]
     Batch --> Pipeline
+    API --> Analytics["Catalog analytics\nquality + coverage + provider performance"]
+    Analytics --> DB
+    Analytics --> Reports["JSON dashboard + CSV export"]
+    Reports --> Intelligence
 ```
 
 ## Data Model
@@ -237,6 +271,7 @@ Core persisted entities:
 | --- | --- |
 | `Product` | Product record, category, dynamic schema, completeness, confidence. |
 | `Source` | Raw source content tied to `product_id`; stores type, identifier, parser metadata, authority rank, object key, size, media type, and SHA-256 checksum. |
+| `SourceChunk` | Searchable source segment with source/product lineage, offsets, checksum, embedding model, and 768-dimensional vector. |
 | `ExtractedField` | One canonical field per product field name; includes value, unit, confidence, status, source, evidence, alternatives, validation. |
 | `ReviewItem` | Human review queue for conflicts, low confidence, missing required fields, and validation issues. |
 | `BatchJob` / `BatchItem` | Batch processing state and item-level payload/errors. |
@@ -360,7 +395,7 @@ Multipart form field: `file`.
 ```json
 {
   "source_ids": null,
-  "stages": ["classify", "extract", "reconcile", "validate", "enrich", "score"]
+  "stages": ["index", "classify", "extract", "reconcile", "validate", "enrich", "score", "deduplicate"]
 }
 ```
 
@@ -376,6 +411,18 @@ Citation-backed enriched fields include nested `citations`, and product detail a
 ### Queue A Batch
 
 `POST /api/v1/batches` returns `202 Accepted`; the worker processes queued items asynchronously. Text uses `raw_content`, URL uses `url`, and PDF uses base64-encoded `content_base64`. `POST /api/v1/batches/{batch_id}/process` remains available for controlled retries and local testing.
+
+`POST /api/v1/imports/catalog` accepts a multipart CSV or TSV file and returns a queued batch. A `product_name` or `name` column is required; `text`/`raw_content` is optional because other columns are converted into traceable labeled catalog text.
+
+### Semantic Search, Duplicates, And Catalog RAG
+
+`GET /api/v1/search/semantic?q=230%20V%20motor&limit=10` returns ranked source chunks. `GET /api/v1/products/{product_id}/duplicates` groups high-similarity matches by candidate product. Admin-only `POST /api/v1/search/reindex` rebuilds all source vectors.
+
+`POST /api/v1/rag/query` answers against internal catalog chunks and returns the answer, matched chunks, and `ferrox://source-chunks/{id}` citations. Unsupported or uncited answers return `404` rather than an ungrounded response.
+
+### Catalog Analytics And Reports
+
+`GET /api/v1/analytics/catalog` returns catalog totals, quality rates, category/source/field/review/batch breakdowns, engineering validation issues, completeness bands, and provider performance. `GET /api/v1/analytics/catalog.csv` downloads the same report for BI or spreadsheet workflows.
 
 ### Operations
 
@@ -404,7 +451,7 @@ This starts release migrations, API, worker, frontend, private PostgreSQL/MinIO,
 ```json
 {
   "source_ids": null,
-  "stages": ["classify", "extract", "reconcile", "validate", "score"]
+  "stages": ["index", "classify", "extract", "reconcile", "validate", "enrich", "score", "deduplicate"]
 }
 ```
 
@@ -502,12 +549,14 @@ Returns batch summary plus item-level status, error, `product_id`, and original 
 }
 ```
 
-Processes queued batch items and, when `include_failed` is true, retries failed items. Batch processing remains synchronous; individual product pipelines can use the persistent worker-backed job API above.
+Processes queued batch items and, when `include_failed` is true, retries failed items immediately for local operations. Normal batch execution remains asynchronous through the persistent worker queue.
 
 ## Test Result
 
 Latest local run:
 
 ```text
-33 passed
+63 passed, 4 skipped
 ```
+
+The skipped tests are the opt-in PostgreSQL and live Gemini/Groq/OpenAI integration suites; CI runs PostgreSQL automatically, while live-provider checks require repository secrets and manual dispatch.

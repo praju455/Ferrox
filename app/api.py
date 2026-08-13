@@ -6,9 +6,9 @@ from pathlib import Path
 
 import requests
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
-from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
@@ -28,12 +28,28 @@ from app.core.security import (
     verify_password,
 )
 from app.db import get_db
-from app.models import BatchItem, BatchJob, ExtractedField, FieldStatus, LLMRun, PipelineJob, Product, ReviewItem, ReviewStatus, Source, User, UserRole
+from app.models import (
+    BatchItem,
+    BatchJob,
+    ExtractedField,
+    FieldStatus,
+    LLMRun,
+    PipelineJob,
+    Product,
+    ReviewItem,
+    ReviewStatus,
+    Source,
+    SourceChunk,
+    User,
+    UserRole,
+)
 from app.schemas import (
     BatchCreateRequest,
     BatchDetail,
     BatchProcessRequest,
     BatchRead,
+    CatalogAnalyticsRead,
+    CatalogImportRead,
     ExtractedFieldRead,
     FieldCorrectionRequest,
     LLMRunRead,
@@ -44,6 +60,10 @@ from app.schemas import (
     ProductRead,
     ReviewItemRead,
     ReviewItemUpdate,
+    ReindexRead,
+    RAGAnswerRead,
+    RAGQueryRequest,
+    SemanticSearchHitRead,
     SourceRead,
     TextSourceCreate,
     TextIngestionRequest,
@@ -54,10 +74,16 @@ from app.schemas import (
     UserRead,
     UserUpdateRequest,
 )
+from app.services.analytics import CatalogAnalyticsService
+from app.services.catalog_import import CatalogCSVImporter
 from app.services.ingestion import IngestionService
 from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_batch_job, process_pipeline_job
-from app.services.pipeline import ProductPipeline
+from app.services.llm import LLMClient
 from app.services.observability import HTTP_LATENCY, HTTP_REQUESTS, METRICS_CONTENT_TYPE, metrics_payload
+from app.services.observability import SQLAlchemyLLMObserver
+from app.services.pipeline import ProductPipeline
+from app.services.rag import InternalCatalogRAG
+from app.services.search import DuplicateDetector, SemanticSearchService, SourceChunkIndexer
 from app.services.storage import build_object_storage
 
 
@@ -250,6 +276,52 @@ def extract_pdf_source(product_id: str, file: UploadFile) -> Source:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post(
+    "/imports/catalog",
+    response_model=CatalogImportRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_internal_api_key)],
+)
+def import_catalog(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+    settings = get_settings()
+    filename = file.filename or "catalog.csv"
+    if Path(filename).suffix.lower() not in {".csv", ".tsv", ".txt"}:
+        raise HTTPException(status_code=415, detail="Catalog imports require CSV, TSV, or delimited text files")
+    content = file.file.read(settings.max_catalog_upload_bytes + 1)
+    if len(content) > settings.max_catalog_upload_bytes:
+        raise HTTPException(status_code=413, detail="Catalog upload is too large")
+    try:
+        rows = CatalogCSVImporter(settings.max_catalog_rows).parse(content, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    batch = BatchJob(status="queued", total_items=len(rows))
+    db.add(batch)
+    db.flush()
+    for row in rows:
+        product = Product(name=row.product_name)
+        db.add(product)
+        db.flush()
+        payload = {
+            "name": row.product_name,
+            "sources": [{"source_type": "text", "source_identifier": row.source_identifier, "raw_content": row.raw_content}],
+            "catalog_row_number": row.row_number,
+        }
+        db.add(BatchItem(batch_id=batch.id, product_id=product.id, status="queued", payload=payload))
+    db.commit()
+    db.refresh(batch)
+    return {
+        "id": batch.id,
+        "status": batch.status,
+        "total_items": batch.total_items,
+        "processed_items": batch.processed_items,
+        "failed_items": batch.failed_items,
+        "items": batch.items,
+        "imported_rows": len(rows),
+        "filename": filename,
+    }
+
+
 @router.post("/products", response_model=ProductRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_internal_api_key)])
 def create_product(payload: ProductCreateRequest, db: Session = Depends(get_db)) -> Product:
     product = Product(name=payload.name)
@@ -273,6 +345,95 @@ def list_products(
     if category:
         query = query.where(Product.category == category)
     return list(db.scalars(query.order_by(Product.created_at.desc()).offset(offset).limit(limit)))
+
+
+@router.get("/search/semantic", response_model=list[SemanticSearchHitRead], dependencies=[Depends(require_reviewer)])
+def semantic_search(
+    q: str = Query(min_length=2, max_length=2_000),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    settings = get_settings()
+    hits = SemanticSearchService(db, settings).search(q, limit or settings.semantic_search_default_limit)
+    return [hit.__dict__ for hit in hits]
+
+
+@router.get(
+    "/products/{product_id}/duplicates",
+    response_model=list[SemanticSearchHitRead],
+    dependencies=[Depends(require_reviewer)],
+)
+def product_duplicates(
+    product_id: str,
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    settings = get_settings()
+    product = product_or_404(product_id, db)
+    detector = DuplicateDetector(SemanticSearchService(db, settings), settings.duplicate_similarity_threshold)
+    return [hit.__dict__ for hit in detector.find(product, limit)]
+
+
+@router.post("/search/reindex", response_model=ReindexRead, dependencies=[Depends(require_admin)])
+def reindex_catalog(db: Session = Depends(get_db)) -> dict[str, int]:
+    settings = get_settings()
+    indexer = SourceChunkIndexer(db, settings)
+    products = list(db.scalars(select(Product).order_by(Product.created_at)))
+    indexed_sources = 0
+    indexed_chunks = 0
+    for product in products:
+        if not product.sources:
+            continue
+        indexed_sources += len(product.sources)
+        indexed_chunks += indexer.index_sources(product, product.sources)
+    db.commit()
+    return {"indexed_products": len(products), "indexed_sources": indexed_sources, "indexed_chunks": indexed_chunks}
+
+
+@router.post("/rag/query", response_model=RAGAnswerRead, dependencies=[Depends(require_reviewer)])
+def query_catalog_rag(payload: RAGQueryRequest, db: Session = Depends(get_db)) -> dict:
+    settings = get_settings()
+    llm = LLMClient(settings, observer=SQLAlchemyLLMObserver(db, settings))
+    rag = InternalCatalogRAG(SemanticSearchService(db, settings), llm)
+    result = rag.answer(payload.query, payload.limit, payload.product_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No citation-backed catalog answer was found")
+    db.commit()
+    return {
+        "answer": result.answer,
+        "citations": [citation.__dict__ for citation in result.citations],
+        "matches": [match.__dict__ for match in result.matches],
+    }
+
+
+@router.get("/search/chunks/{chunk_id}", response_model=SemanticSearchHitRead, dependencies=[Depends(require_reviewer)])
+def get_source_chunk(chunk_id: str, db: Session = Depends(get_db)) -> dict:
+    chunk = db.get(SourceChunk, chunk_id)
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Source chunk not found")
+    return {
+        "chunk_id": chunk.id,
+        "source_id": chunk.source_id,
+        "product_id": chunk.product_id,
+        "product_name": chunk.product.name,
+        "source_identifier": chunk.source.source_identifier,
+        "content": chunk.content,
+        "score": 1.0,
+    }
+
+
+@router.get("/analytics/catalog", response_model=CatalogAnalyticsRead, dependencies=[Depends(require_reviewer)])
+def catalog_analytics(db: Session = Depends(get_db)) -> dict:
+    return CatalogAnalyticsService(db).report()
+
+
+@router.get("/analytics/catalog.csv", dependencies=[Depends(require_reviewer)])
+def export_catalog_analytics(db: Session = Depends(get_db)) -> Response:
+    return Response(
+        CatalogAnalyticsService(db).csv_report(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="ferrox-catalog-report.csv"'},
+    )
 
 
 @router.post("/products/{product_id}/sources/text", response_model=SourceRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_internal_api_key)])

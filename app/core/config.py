@@ -36,8 +36,22 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 30
     scraper_timeout_seconds: int = 15
     max_source_chars: int = Field(default=120_000, ge=1_000)
+    document_chunk_chars: int = Field(default=12_000, ge=2_000, le=50_000)
+    document_chunk_overlap_chars: int = Field(default=500, ge=0, le=5_000)
+    embedding_chunk_chars: int = Field(default=6_000, ge=1_000, le=20_000)
+    embedding_chunk_overlap_chars: int = Field(default=300, ge=0, le=2_000)
+    embedding_model: str = "gemini-embedding-001"
+    embedding_dimensions: int = Field(default=768, ge=768, le=768)
+    duplicate_similarity_threshold: float = Field(default=0.92, ge=0.5, le=1.0)
+    semantic_search_default_limit: int = Field(default=10, ge=1, le=100)
+    enable_pdf_ocr: bool = True
+    pdf_ocr_language: str = "eng"
+    pdf_ocr_dpi: int = Field(default=200, ge=72, le=600)
+    pdf_ocr_min_text_chars: int = Field(default=24, ge=0, le=2_000)
     max_request_bytes: int = Field(default=25_000_000, ge=1_000_000)
     max_pdf_upload_bytes: int = Field(default=20_000_000, ge=1_000_000)
+    max_catalog_upload_bytes: int = Field(default=10_000_000, ge=100_000)
+    max_catalog_rows: int = Field(default=10_000, ge=1, le=100_000)
     object_storage_backend: str = "local"
     local_storage_path: str = ".data/objects"
     s3_bucket: str = "ferrox-sources"

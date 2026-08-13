@@ -8,6 +8,7 @@ import {
   apiFetch,
   apiDownload,
   Batch,
+  CatalogAnalytics,
   clearToken,
   fileToBase64,
   getToken,
@@ -15,11 +16,13 @@ import {
   PipelineJob,
   Product,
   ProductDetail,
+  RagAnswer,
   ReviewItem,
+  SemanticSearchHit,
   User,
 } from "../../lib/api";
 
-type View = "overview" | "products" | "reviews" | "batches" | "operations";
+type View = "overview" | "products" | "reviews" | "batches" | "analytics" | "operations";
 type SourceMode = "text" | "url" | "pdf";
 type BatchDraft = { name: string; source: Record<string, string> };
 
@@ -28,6 +31,7 @@ const views: Array<{ id: View; label: string; short: string }> = [
   { id: "products", label: "Products", short: "PD" },
   { id: "reviews", label: "Review queue", short: "RQ" },
   { id: "batches", label: "Batch runs", short: "BT" },
+  { id: "analytics", label: "Catalog intelligence", short: "CI" },
   { id: "operations", label: "Operations", short: "OP" },
 ];
 
@@ -39,6 +43,7 @@ export default function WorkspacePage() {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [jobs, setJobs] = useState<PipelineJob[]>([]);
   const [runs, setRuns] = useState<LlmRun[]>([]);
+  const [analytics, setAnalytics] = useState<CatalogAnalytics | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [product, setProduct] = useState<ProductDetail | null>(null);
@@ -49,16 +54,18 @@ export default function WorkspacePage() {
   const loadWorkspace = useCallback(async () => {
     setError("");
     try {
-      const [productRows, reviewRows, batchRows, jobRows] = await Promise.all([
+      const [productRows, reviewRows, batchRows, jobRows, analyticsReport] = await Promise.all([
         apiFetch<Product[]>("/products"),
         apiFetch<ReviewItem[]>("/reviews?status=open"),
         apiFetch<Batch[]>("/batches"),
         apiFetch<PipelineJob[]>("/pipeline/jobs?limit=20"),
+        apiFetch<CatalogAnalytics>("/analytics/catalog"),
       ]);
       setProducts(productRows);
       setReviews(reviewRows);
       setBatches(batchRows);
       setJobs(jobRows);
+      setAnalytics(analyticsReport);
       if (!selectedProductId && productRows.length) setSelectedProductId(productRows[0].id);
       if (getToken()) {
         try {
@@ -168,6 +175,7 @@ export default function WorkspacePage() {
             )}
             {view === "reviews" && <ReviewsView onError={setError} onRefresh={loadWorkspace} reviews={reviews} />}
             {view === "batches" && <BatchesView batches={batches} onError={setError} onRefresh={loadWorkspace} onNotice={setNotice} />}
+            {view === "analytics" && <AnalyticsView analytics={analytics} onError={setError} />}
             {view === "operations" && <Operations jobs={jobs} runs={runs} />}
           </div>
         )}
@@ -345,6 +353,7 @@ function ReviewsView({ reviews, onRefresh, onError }: { reviews: ReviewItem[]; o
 function BatchesView({ batches, onRefresh, onNotice, onError }: { batches: Batch[]; onRefresh: () => Promise<void>; onNotice: (text: string) => void; onError: (text: string) => void }) {
   const [drafts, setDrafts] = useState<BatchDraft[]>([]);
   const [name, setName] = useState(""); const [mode, setMode] = useState<SourceMode>("text"); const [value, setValue] = useState(""); const [file, setFile] = useState<File | null>(null);
+  const [catalogFile, setCatalogFile] = useState<File | null>(null);
   async function addDraft() {
     try {
       let source: Record<string, string>;
@@ -360,7 +369,42 @@ function BatchesView({ batches, onRefresh, onNotice, onError }: { batches: Batch
       setDrafts([]); await onRefresh(); onNotice(`Batch ${batch.id.slice(0, 8)} queued for the worker.`);
     } catch (reason) { onError(messageOf(reason)); }
   }
-  return <div className="batch-layout"><section className="batch-builder"><div className="band-heading"><div><span>NEW BATCH</span><h2>Stage products</h2></div><strong>{drafts.length} ITEMS</strong></div><div className="batch-form"><label><span>Product name</span><input onChange={(event) => setName(event.target.value)} value={name} /></label><div className="segmented-control">{(["text", "url", "pdf"] as SourceMode[]).map((item) => <button className={mode === item ? "active" : ""} key={item} onClick={() => setMode(item)} type="button">{item.toUpperCase()}</button>)}</div>{mode === "pdf" ? <label className="wide"><span>PDF datasheet</span><input accept="application/pdf" onChange={(event) => setFile(event.target.files?.[0] || null)} type="file" /></label> : <label className="wide"><span>{mode === "url" ? "Public URL" : "Catalog text"}</span><textarea onChange={(event) => setValue(event.target.value)} rows={4} value={value} /></label>}<button className="outline-command" disabled={!name || (mode !== "pdf" && !value) || (mode === "pdf" && !file)} onClick={addDraft} type="button">Add to batch</button></div><div className="draft-list">{drafts.map((draft, index) => <div key={`${draft.name}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><strong>{draft.name}</strong><em>{draft.source.source_type}</em><button onClick={() => setDrafts((items) => items.filter((_, itemIndex) => itemIndex !== index))} type="button">Remove</button></div>)}</div><button className="solid-command batch-submit" disabled={!drafts.length} onClick={submitBatch} type="button">Queue batch <span>&#8594;</span></button></section><section className="batch-history"><div className="subhead"><span>RUN HISTORY</span><strong>{batches.length}</strong></div>{batches.map((batch) => <article key={batch.id}><div><Status value={batch.status} /><code>{batch.id.slice(0, 8)}</code></div><strong>{batch.processed_items} / {batch.total_items} processed</strong><span>{batch.failed_items} failed</span></article>)}{!batches.length && <Empty text="No batch runs yet." />}</section></div>;
+  async function importCatalog() {
+    if (!catalogFile) return;
+    const form = new FormData();
+    form.append("file", catalogFile);
+    try {
+      const batch = await apiFetch<Batch & { imported_rows: number }>("/imports/catalog", { method: "POST", body: form });
+      setCatalogFile(null);
+      await onRefresh();
+      onNotice(`${batch.imported_rows} catalog rows queued in batch ${batch.id.slice(0, 8)}.`);
+    } catch (reason) { onError(messageOf(reason)); }
+  }
+  return <><section className="catalog-import"><div><span>CATALOG FILE</span><strong>Queue an existing supplier catalog</strong></div><label><input accept=".csv,.tsv,text/csv,text/tab-separated-values" onChange={(event) => setCatalogFile(event.target.files?.[0] || null)} type="file" /><span>{catalogFile?.name || "Choose CSV or TSV"}</span></label><button className="solid-command" disabled={!catalogFile} onClick={importCatalog} type="button">Import catalog <span>&#8594;</span></button></section><div className="batch-layout"><section className="batch-builder"><div className="band-heading"><div><span>NEW BATCH</span><h2>Stage products</h2></div><strong>{drafts.length} ITEMS</strong></div><div className="batch-form"><label><span>Product name</span><input onChange={(event) => setName(event.target.value)} value={name} /></label><div className="segmented-control">{(["text", "url", "pdf"] as SourceMode[]).map((item) => <button className={mode === item ? "active" : ""} key={item} onClick={() => setMode(item)} type="button">{item.toUpperCase()}</button>)}</div>{mode === "pdf" ? <label className="wide"><span>PDF datasheet</span><input accept="application/pdf" onChange={(event) => setFile(event.target.files?.[0] || null)} type="file" /></label> : <label className="wide"><span>{mode === "url" ? "Public URL" : "Catalog text"}</span><textarea onChange={(event) => setValue(event.target.value)} rows={4} value={value} /></label>}<button className="outline-command" disabled={!name || (mode !== "pdf" && !value) || (mode === "pdf" && !file)} onClick={addDraft} type="button">Add to batch</button></div><div className="draft-list">{drafts.map((draft, index) => <div key={`${draft.name}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><strong>{draft.name}</strong><em>{draft.source.source_type}</em><button onClick={() => setDrafts((items) => items.filter((_, itemIndex) => itemIndex !== index))} type="button">Remove</button></div>)}</div><button className="solid-command batch-submit" disabled={!drafts.length} onClick={submitBatch} type="button">Queue batch <span>&#8594;</span></button></section><section className="batch-history"><div className="subhead"><span>RUN HISTORY</span><strong>{batches.length}</strong></div>{batches.map((batch) => <article key={batch.id}><div><Status value={batch.status} /><code>{batch.id.slice(0, 8)}</code></div><strong>{batch.processed_items} / {batch.total_items} processed</strong><span>{batch.failed_items} failed</span></article>)}{!batches.length && <Empty text="No batch runs yet." />}</section></div></>;
+}
+
+function AnalyticsView({ analytics, onError }: { analytics: CatalogAnalytics | null; onError: (text: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<"search" | "ask">("search");
+  const [hits, setHits] = useState<SemanticSearchHit[]>([]);
+  const [answer, setAnswer] = useState<RagAnswer | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function runQuery(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setAnswer(null); setHits([]);
+    try {
+      if (mode === "search") setHits(await apiFetch<SemanticSearchHit[]>(`/search/semantic?q=${encodeURIComponent(query)}&limit=10`));
+      else setAnswer(await apiFetch<RagAnswer>("/rag/query", { method: "POST", body: JSON.stringify({ query, limit: 8 }) }));
+    } catch (reason) { onError(messageOf(reason)); } finally { setBusy(false); }
+  }
+  if (!analytics) return <Empty text="Catalog analytics are unavailable." />;
+  const quality = analytics.quality;
+  return <><div className="metric-strip"><Metric label="Catalog products" value={String(analytics.totals.products || 0)} detail={`${analytics.totals.sources || 0} source documents`} /><Metric label="Completeness" value={`${Math.round((quality.average_completeness || 0) * 100)}%`} detail="Average required-field coverage" /><Metric label="Validation pass" value={`${Math.round((quality.validation_pass_rate || 0) * 100)}%`} detail="Rule and semantic checks" /><Metric label="Citation coverage" value={`${Math.round((quality.citation_coverage || 0) * 100)}%`} detail={`${analytics.totals.source_chunks || 0} searchable chunks`} /></div><section className="intelligence-query"><div className="band-heading"><div><span>CATALOG RETRIEVAL</span><h2>Search product evidence</h2></div><div className="segmented-control"><button className={mode === "search" ? "active" : ""} onClick={() => setMode("search")} type="button">SEARCH</button><button className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")} type="button">ASK</button></div></div><form onSubmit={runQuery}><input onChange={(event) => setQuery(event.target.value)} placeholder={mode === "search" ? "motor 230 V 1750 RPM" : "Which pump has the highest rated flow?"} required value={query} /><button className="solid-command" disabled={busy} type="submit">{busy ? "Working..." : mode === "search" ? "Search catalog" : "Ask catalog"}</button></form>{answer && <article className="rag-answer"><span>CITATION-BACKED ANSWER</span><strong>{answer.answer}</strong>{answer.citations.map((citation) => <p key={citation.url}><b>{citation.title}</b>{citation.cited_text}</p>)}</article>}<div className="search-results">{hits.map((hit) => <article key={hit.chunk_id}><div><strong>{hit.product_name}</strong><span>{Math.round(hit.score * 100)}% MATCH</span></div><small>{hit.source_identifier}</small><p>{hit.content}</p></article>)}</div></section><div className="analytics-grid"><Breakdown title="Category mix" items={analytics.categories} /><Breakdown title="Field status" items={analytics.field_statuses} /><Breakdown title="Completeness" items={analytics.completeness_bands} /><section><div className="subhead"><span>PROVIDER PERFORMANCE</span><strong>{analytics.providers.length}</strong></div><div className="provider-list">{analytics.providers.map((provider) => <article key={provider.provider}><strong>{provider.provider}</strong><span>{Math.round(provider.success_rate * 100)}% success</span><code>{provider.average_latency_ms} ms</code><small>{provider.tokens} tokens / ${provider.estimated_cost_usd.toFixed(4)}</small></article>)}{!analytics.providers.length && <Empty text="No provider telemetry yet." />}</div></section></div><button className="outline-command analytics-export" onClick={() => apiDownload("/analytics/catalog.csv", "ferrox-catalog-report.csv").catch((reason) => onError(messageOf(reason)))} type="button">Download catalog report</button></>;
+}
+
+function Breakdown({ title, items }: { title: string; items: Array<{ label: string; count: number }> }) {
+  const maximum = Math.max(1, ...items.map((item) => item.count));
+  return <section><div className="subhead"><span>{title}</span><strong>{items.reduce((total, item) => total + item.count, 0)}</strong></div><div className="breakdown-list">{items.map((item) => <div key={item.label}><span>{item.label}</span><i><b style={{ width: `${Math.max(3, (item.count / maximum) * 100)}%` }} /></i><strong>{item.count}</strong></div>)}</div></section>;
 }
 
 function Operations({ jobs, runs }: { jobs: PipelineJob[]; runs: LlmRun[] }) {

@@ -1,3 +1,5 @@
+import pytest
+
 from app.models import Product
 from app.services.ingestion import IngestionService
 from app.services.pipeline import ProductPipeline
@@ -20,7 +22,8 @@ def test_pipeline_extracts_and_reconciles_conflicting_sources(db_session):
     assert product.completeness_score > 0
     flow = next(field for field in product.fields if field.field_name == "flow_rate")
     assert flow.status in {"conflict_resolved", "validated"}
-    assert flow.value == "120"
+    assert flow.value == pytest.approx(454.249414, rel=1e-6)
+    assert flow.unit == "L/min"
 
 
 def test_low_confidence_missing_values_create_review_items(db_session):

@@ -117,6 +117,45 @@ export type LlmRun = {
   created_at: string;
 };
 
+export type AnalyticsBreakdown = { label: string; count: number };
+
+export type CatalogAnalytics = {
+  generated_at: string;
+  totals: Record<string, number>;
+  quality: Record<string, number>;
+  categories: AnalyticsBreakdown[];
+  source_types: AnalyticsBreakdown[];
+  field_statuses: AnalyticsBreakdown[];
+  review_severities: AnalyticsBreakdown[];
+  batch_statuses: AnalyticsBreakdown[];
+  completeness_bands: AnalyticsBreakdown[];
+  validation_issues: AnalyticsBreakdown[];
+  providers: Array<{
+    provider: string;
+    runs: number;
+    success_rate: number;
+    average_latency_ms: number;
+    tokens: number;
+    estimated_cost_usd: number;
+  }>;
+};
+
+export type SemanticSearchHit = {
+  chunk_id: string;
+  source_id: string;
+  product_id: string;
+  product_name: string;
+  source_identifier: string;
+  content: string;
+  score: number;
+};
+
+export type RagAnswer = {
+  answer: string;
+  citations: Array<{ url: string; title: string | null; cited_text: string | null }>;
+  matches: SemanticSearchHit[];
+};
+
 const defaultApiBase = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000/api/v1";
 
 export function getApiBase() {

@@ -7,6 +7,7 @@ from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String,
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.db_types import EmbeddingVector
 
 
 class SourceType(str, enum.Enum):
@@ -70,6 +71,7 @@ class Product(Base):
     batch_items: Mapped[list["BatchItem"]] = relationship(back_populates="product")
     pipeline_jobs: Mapped[list["PipelineJob"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     citations: Mapped[list["Citation"]] = relationship(back_populates="product", cascade="all, delete-orphan")
+    source_chunks: Mapped[list["SourceChunk"]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
 
 class Source(Base):
@@ -91,6 +93,26 @@ class Source(Base):
 
     product: Mapped[Product] = relationship(back_populates="sources")
     fields: Mapped[list["ExtractedField"]] = relationship(back_populates="source")
+    chunks: Mapped[list["SourceChunk"]] = relationship(back_populates="source", cascade="all, delete-orphan")
+
+
+class SourceChunk(Base):
+    __tablename__ = "source_chunks"
+    __table_args__ = (UniqueConstraint("source_id", "chunk_index", name="uq_source_chunk_index"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    embedding_model: Mapped[str] = mapped_column(String(120))
+    embedding: Mapped[list[float]] = mapped_column(EmbeddingVector(768))
+    chunk_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    source: Mapped[Source] = relationship(back_populates="chunks")
+    product: Mapped[Product] = relationship(back_populates="source_chunks")
 
 
 class ExtractedField(Base):
