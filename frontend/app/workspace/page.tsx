@@ -192,12 +192,12 @@ export default function WorkspacePage() {
                 products={products}
                 reviews={reviews}
                 user={user}
-                selectProduct={(id) => { setSelectedProductId(id); setView("products"); }}
+                selectProduct={(id: number) => { setSelectedProductId(id); setView("products"); }}
               />
             )}
             {view === "products" && (
               <ProductsView
-                onCreated={async (created) => { setSelectedProductId(created.id); await loadWorkspace(); }}
+                onCreated={async (created: Product) => { setSelectedProductId(created.id); await loadWorkspace(); }}
                 onError={setError}
                 onNotice={setNotice}
                 onRefresh={refreshProduct}
