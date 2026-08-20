@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, useClerk } from "@clerk/nextjs";
@@ -150,7 +151,7 @@ export default function WorkspacePage() {
       <header className="fb-topnav">
         <div style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
           <Link href="/" className="fb-brand" style={{ gap: '12px', alignItems: 'center' }}>
-            <img src="/logo.png" alt="FX Logo" style={{ height: '28px', width: 'auto' }} />
+            <Image src="/logo.png" alt="FX Logo" width={28} height={28} />
             FERROX
           </Link>
           <nav className="fb-nav-links">

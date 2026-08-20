@@ -128,6 +128,10 @@ npm run dev
 
 The frontend runs at `http://127.0.0.1:3000` and defaults to `http://127.0.0.1:8000/api/v1` for the backend API.
 
+Clerk authentication uses the catch-all `/login/[[...sign-in]]` route so OAuth callbacks stay inside the Ferrox UI. Unauthenticated `/workspace` requests are redirected to `/login`, then returned to the workspace after sign-in.
+
+If Next.js reports a missing generated chunk such as `Cannot find module './209.js'`, stop the development server, remove the generated `frontend/.next` directory, and restart `npm run dev`. Do not run `npm run build` while `npm run dev` is using the same `.next` directory.
+
 ## Environment
 
 All secrets are read from environment variables. Do not commit `.env`.
@@ -600,7 +604,7 @@ Processes queued batch items and, when `include_failed` is true, retries failed 
 Latest local run:
 
 ```text
-63 passed, 4 skipped
+79 passed, 4 skipped
 ```
 
 The skipped tests are the opt-in PostgreSQL and live Gemini/Groq/OpenAI integration suites; CI runs PostgreSQL automatically, while live-provider checks require repository secrets and manual dispatch.
