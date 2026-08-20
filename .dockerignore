@@ -1,9 +1,0 @@
-.git
-.github
-.venv
-.data
-frontend
-front
-__pycache__
-*.pyc
-.env
