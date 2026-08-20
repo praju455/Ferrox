@@ -10,7 +10,7 @@ services:
     volumes:
       - ferrox-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ferrox -d ferrox"]
+      test: [ "CMD-SHELL", "pg_isready -U ferrox -d ferrox" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -32,9 +32,7 @@ services:
       minio:
         condition: service_started
     entrypoint: >
-      /bin/sh -c "until mc alias set local http://minio:9000 ferrox change-this-local-secret; do sleep 1; done &&
-      mc mb --ignore-existing local/ferrox-sources &&
-      mc anonymous set none local/ferrox-sources"
+      /bin/sh -c "until mc alias set local http://minio:9000 ferrox change-this-local-secret; do sleep 1; done && mc mb --ignore-existing local/ferrox-sources && mc anonymous set none local/ferrox-sources"
 
 volumes:
   ferrox-postgres:
