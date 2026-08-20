@@ -192,7 +192,7 @@ export default function WorkspacePage() {
                 products={products}
                 reviews={reviews}
                 user={user}
-                selectProduct={(id: number) => { setSelectedProductId(id); setView("products"); }}
+                selectProduct={(id: string) => { setSelectedProductId(id); setView("products"); }}
               />
             )}
             {view === "products" && (
