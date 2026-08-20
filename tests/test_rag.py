@@ -25,6 +25,7 @@ class FakeSearch:
         limit: int,
         exclude_product_id: str | None = None,
         product_id: str | None = None,
+        manufacturer_owned_only: bool = False,
     ) -> list[SearchHit]:
         if product_id:
             return [hit for hit in self.hits[:limit] if hit.product_id == product_id]

@@ -95,3 +95,21 @@ def test_inactive_user_token_is_rejected(auth_client):
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 401
+
+
+def test_invalid_clerk_token_is_rejected_without_falling_back(db_session, monkeypatch):
+    monkeypatch.setenv("CLERK_SECRET_KEY", "test-clerk-secret")
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    get_settings.cache_clear()
+    app = create_app()
+
+    def override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_db
+    response = TestClient(app).get(
+        "/api/v1/products",
+        headers={"Authorization": "Bearer invalid-clerk-token"},
+    )
+
+    assert response.status_code == 401

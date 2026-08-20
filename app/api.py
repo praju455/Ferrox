@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -31,11 +31,14 @@ from app.db import get_db
 from app.models import (
     BatchItem,
     BatchJob,
+    EvaluationRun,
     ExtractedField,
     FieldStatus,
     LLMRun,
     PipelineJob,
     Product,
+    ProductDeliveryRecord,
+    ReferenceDataset,
     ReviewItem,
     ReviewStatus,
     Source,
@@ -51,15 +54,19 @@ from app.schemas import (
     CatalogAnalyticsRead,
     CatalogImportRead,
     ExtractedFieldRead,
+    EvaluationCreateRequest,
+    EvaluationRunRead,
     FieldCorrectionRequest,
     LLMRunRead,
     PipelineRunRequest,
     PipelineJobRead,
     ProductCreateRequest,
     ProductDetail,
+    ProductDeliveryRead,
     ProductRead,
     ReviewItemRead,
     ReviewItemUpdate,
+    ReferenceDatasetRead,
     ReindexRead,
     RAGAnswerRead,
     RAGQueryRequest,
@@ -76,6 +83,8 @@ from app.schemas import (
 )
 from app.services.analytics import CatalogAnalyticsService
 from app.services.catalog_import import CatalogCSVImporter
+from app.services.delivery import UnilogDeliveryService
+from app.services.evaluation import GroundTruthEvaluationService
 from app.services.ingestion import IngestionService
 from app.services.jobs import PROCESSABLE_JOB_STATUSES, process_batch_job, process_pipeline_job
 from app.services.llm import LLMClient
@@ -85,6 +94,8 @@ from app.services.pipeline import ProductPipeline
 from app.services.rag import InternalCatalogRAG
 from app.services.search import DuplicateDetector, SemanticSearchService, SourceChunkIndexer
 from app.services.storage import build_object_storage
+from app.services.reference_data import REFERENCE_DATASET_TYPES, ReferenceDataService
+from app.services.xlsx_import import XLSXCatalogImporter
 
 
 router = APIRouter()
@@ -250,16 +261,17 @@ def product_or_404(product_id: str, db: Session) -> Product:
     return product
 
 
-def fetch_url_source(product_id: str, url: str) -> Source:
+def fetch_url_source(product_id: str, url: str, manufacturer_owned: bool = False) -> Source:
     try:
-        return IngestionService(get_settings()).from_url(product_id, url)
+        service = IngestionService(get_settings())
+        return service.from_url(product_id, url, manufacturer_owned=True) if manufacturer_owned else service.from_url(product_id, url)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail="Source URL could not be fetched") from exc
 
 
-def extract_pdf_source(product_id: str, file: UploadFile) -> Source:
+def extract_pdf_source(product_id: str, file: UploadFile, manufacturer_owned: bool = False) -> Source:
     if Path(file.filename or "").suffix.lower() != ".pdf":
         raise HTTPException(status_code=415, detail="Only PDF files are supported")
     settings = get_settings()
@@ -271,6 +283,7 @@ def extract_pdf_source(product_id: str, file: UploadFile) -> Source:
             product_id,
             content,
             file.filename or "uploaded-datasheet.pdf",
+            manufacturer_owned=manufacturer_owned,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -282,16 +295,25 @@ def extract_pdf_source(product_id: str, file: UploadFile) -> Source:
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(require_internal_api_key)],
 )
-def import_catalog(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+def import_catalog(
+    file: UploadFile = File(...),
+    sheet_name: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
     settings = get_settings()
     filename = file.filename or "catalog.csv"
-    if Path(filename).suffix.lower() not in {".csv", ".tsv", ".txt"}:
-        raise HTTPException(status_code=415, detail="Catalog imports require CSV, TSV, or delimited text files")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xlsm"}:
+        raise HTTPException(status_code=415, detail="Catalog imports require CSV, TSV, delimited text, XLSX, or XLSM files")
     content = file.file.read(settings.max_catalog_upload_bytes + 1)
     if len(content) > settings.max_catalog_upload_bytes:
         raise HTTPException(status_code=413, detail="Catalog upload is too large")
     try:
-        rows = CatalogCSVImporter(settings.max_catalog_rows).parse(content, filename)
+        rows = (
+            XLSXCatalogImporter(settings.max_catalog_rows).parse(content, filename, sheet_name)
+            if suffix in {".xlsx", ".xlsm"}
+            else CatalogCSVImporter(settings.max_catalog_rows).parse(content, filename)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -320,6 +342,133 @@ def import_catalog(file: UploadFile = File(...), db: Session = Depends(get_db)) 
         "imported_rows": len(rows),
         "filename": filename,
     }
+
+
+@router.post(
+    "/reference-data/{dataset_type}",
+    response_model=ReferenceDatasetRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
+def upload_reference_dataset(
+    dataset_type: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> ReferenceDataset:
+    if dataset_type not in REFERENCE_DATASET_TYPES:
+        raise HTTPException(status_code=422, detail=f"Unknown dataset type. Use one of: {', '.join(sorted(REFERENCE_DATASET_TYPES))}")
+    filename = file.filename or f"{dataset_type}.xlsx"
+    if Path(filename).suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise HTTPException(status_code=415, detail="Reference data requires an XLSX or XLSM workbook")
+    settings = get_settings()
+    content = file.file.read(settings.max_reference_upload_bytes + 1)
+    if len(content) > settings.max_reference_upload_bytes:
+        raise HTTPException(status_code=413, detail="Reference workbook is too large")
+    try:
+        return ReferenceDataService(db, settings.max_reference_rows).load_xlsx(dataset_type, content, filename)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/reference-data",
+    response_model=list[ReferenceDatasetRead],
+    dependencies=[Depends(require_reviewer)],
+)
+def list_reference_datasets(
+    dataset_type: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> list[ReferenceDataset]:
+    query = select(ReferenceDataset)
+    if dataset_type:
+        query = query.where(ReferenceDataset.dataset_type == dataset_type)
+    if active_only:
+        query = query.where(ReferenceDataset.is_active.is_(True))
+    return list(db.scalars(query.order_by(ReferenceDataset.created_at.desc())))
+
+
+@router.get(
+    "/reference-data/{dataset_id}",
+    response_model=ReferenceDatasetRead,
+    dependencies=[Depends(require_reviewer)],
+)
+def get_reference_dataset(dataset_id: str, db: Session = Depends(get_db)) -> ReferenceDataset:
+    dataset = db.get(ReferenceDataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Reference dataset not found")
+    return dataset
+
+
+@router.post(
+    "/products/{product_id}/delivery",
+    response_model=ProductDeliveryRead,
+    dependencies=[Depends(require_internal_api_key)],
+)
+def generate_product_delivery(product_id: str, db: Session = Depends(get_db)) -> ProductDeliveryRecord:
+    product = product_or_404(product_id, db)
+    return UnilogDeliveryService(db).generate(product)
+
+
+@router.get(
+    "/products/{product_id}/delivery",
+    response_model=ProductDeliveryRead,
+    dependencies=[Depends(require_reviewer)],
+)
+def get_product_delivery(product_id: str, db: Session = Depends(get_db)) -> ProductDeliveryRecord:
+    product_or_404(product_id, db)
+    delivery = db.scalar(select(ProductDeliveryRecord).where(ProductDeliveryRecord.product_id == product_id))
+    if delivery is None:
+        raise HTTPException(status_code=404, detail="Delivery record has not been generated")
+    return delivery
+
+
+@router.post(
+    "/evaluations",
+    response_model=EvaluationRunRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_internal_api_key)],
+)
+def run_ground_truth_evaluation(
+    payload: EvaluationCreateRequest,
+    db: Session = Depends(get_db),
+) -> EvaluationRun:
+    try:
+        return GroundTruthEvaluationService(db).run(
+            payload.ground_truth_dataset_id,
+            generate_missing=payload.generate_missing_deliveries,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/evaluations", response_model=list[EvaluationRunRead], dependencies=[Depends(require_reviewer)])
+def list_evaluations(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[EvaluationRun]:
+    return list(db.scalars(select(EvaluationRun).order_by(EvaluationRun.created_at.desc()).limit(limit)))
+
+
+@router.get("/evaluations/{evaluation_id}", response_model=EvaluationRunRead, dependencies=[Depends(require_reviewer)])
+def get_evaluation(evaluation_id: str, db: Session = Depends(get_db)) -> EvaluationRun:
+    evaluation = db.get(EvaluationRun, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation run not found")
+    return evaluation
+
+
+@router.get("/evaluations/{evaluation_id}/report.csv", dependencies=[Depends(require_reviewer)])
+def export_evaluation(evaluation_id: str, db: Session = Depends(get_db)) -> Response:
+    evaluation = db.get(EvaluationRun, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation run not found")
+    return Response(
+        GroundTruthEvaluationService(db).export_csv(evaluation),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="ferrox-evaluation-{evaluation.id}.csv"'},
+    )
 
 
 @router.post("/products", response_model=ProductRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_internal_api_key)])
@@ -449,7 +598,7 @@ def add_text_source(product_id: str, payload: TextSourceCreate, db: Session = De
 @router.post("/products/{product_id}/sources/url", response_model=SourceRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_internal_api_key)])
 def add_url_source(product_id: str, payload: UrlSourceCreate, db: Session = Depends(get_db)) -> Source:
     product_or_404(product_id, db)
-    source = fetch_url_source(product_id, str(payload.url))
+    source = fetch_url_source(product_id, str(payload.url), payload.manufacturer_owned)
     db.add(source)
     db.commit()
     db.refresh(source)
@@ -457,9 +606,14 @@ def add_url_source(product_id: str, payload: UrlSourceCreate, db: Session = Depe
 
 
 @router.post("/products/{product_id}/sources/pdf", response_model=SourceRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_internal_api_key)])
-def add_pdf_source(product_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)) -> Source:
+def add_pdf_source(
+    product_id: str,
+    file: UploadFile = File(...),
+    manufacturer_owned: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Source:
     product_or_404(product_id, db)
-    source = extract_pdf_source(product_id, file)
+    source = extract_pdf_source(product_id, file, manufacturer_owned)
     db.add(source)
     db.commit()
     db.refresh(source)
@@ -529,7 +683,7 @@ def ingest_url(payload: UrlIngestionRequest, db: Session = Depends(get_db)) -> P
     product = Product(name=payload.product_name)
     db.add(product)
     db.flush()
-    source = fetch_url_source(product.id, str(payload.url))
+    source = fetch_url_source(product.id, str(payload.url), payload.manufacturer_owned)
     db.add(source)
     db.commit()
     db.refresh(product)
@@ -537,9 +691,14 @@ def ingest_url(payload: UrlIngestionRequest, db: Session = Depends(get_db)) -> P
 
 
 @router.post("/products/{product_id}/ingest/pdf", response_model=ProductRead, dependencies=[Depends(require_internal_api_key)])
-def ingest_pdf(product_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)) -> Product:
+def ingest_pdf(
+    product_id: str,
+    file: UploadFile = File(...),
+    manufacturer_owned: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Product:
     product = product_or_404(product_id, db)
-    db.add(extract_pdf_source(product.id, file))
+    db.add(extract_pdf_source(product.id, file, manufacturer_owned))
     db.commit()
     db.refresh(product)
     return product
@@ -776,9 +935,9 @@ def process_batch(batch_id: str, payload: BatchProcessRequest | None = None, db:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    if settings.is_production and not settings.jwt_secret:
-        raise RuntimeError("JWT_SECRET must be configured in production")
-    if settings.is_production and len(settings.jwt_secret or "") < 32:
+    if settings.is_production and not settings.jwt_secret and not settings.clerk_secret_key:
+        raise RuntimeError("CLERK_SECRET_KEY or JWT_SECRET must be configured in production")
+    if settings.is_production and settings.jwt_secret and len(settings.jwt_secret) < 32:
         raise RuntimeError("JWT_SECRET must contain at least 32 characters in production")
     app = FastAPI(title="Industrial Product Intelligence Platform API", version="0.2.0")
     app.add_middleware(RequestSafetyMiddleware, max_request_bytes=settings.max_request_bytes)

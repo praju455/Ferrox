@@ -27,7 +27,7 @@ class IngestionService:
     def from_text(self, product_id: str, text: str, identifier: str) -> Source:
         return self._source(product_id, SourceType.text, identifier, text, {"parser": "plain-text"})
 
-    def from_url(self, product_id: str, url: str) -> Source:
+    def from_url(self, product_id: str, url: str, manufacturer_owned: bool = False) -> Source:
         self._validate_public_url(url)
         response = requests.get(
             url,
@@ -40,7 +40,15 @@ class IngestionService:
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
         text = " ".join(soup.get_text(separator=" ").split())
-        return self._source(product_id, SourceType.url, url, text, {"parser": "requests+beautifulsoup"})
+        hostname = (urlparse(response.url).hostname or "").lower().removeprefix("www.")
+        return self._source(
+            product_id,
+            SourceType.url,
+            url,
+            text,
+            {"parser": "requests+beautifulsoup", "final_url": response.url, "hostname": hostname},
+            manufacturer_owned=manufacturer_owned,
+        )
 
     @staticmethod
     def _validate_public_url(url: str) -> None:
@@ -59,7 +67,13 @@ class IngestionService:
             if not ip.is_global:
                 raise ValueError("Private network URLs are not supported")
 
-    def from_pdf_bytes(self, product_id: str, content: bytes, filename: str) -> Source:
+    def from_pdf_bytes(
+        self,
+        product_id: str,
+        content: bytes,
+        filename: str,
+        manufacturer_owned: bool = False,
+    ) -> Source:
         if len(content) > self.settings.max_pdf_upload_bytes:
             raise ValueError("PDF upload is too large")
         if not content.startswith(b"%PDF"):
@@ -106,6 +120,7 @@ class IngestionService:
                 "ocr_pages": ocr_pages,
                 "ocr_failures": ocr_failures,
             },
+            manufacturer_owned=manufacturer_owned,
         )
         source.storage_backend = stored.backend
         source.storage_key = stored.key
@@ -147,7 +162,15 @@ class IngestionService:
         ]
         return " | ".join(cells)
 
-    def _source(self, product_id: str, source_type: SourceType, identifier: str, text: str, metadata: dict) -> Source:
+    def _source(
+        self,
+        product_id: str,
+        source_type: SourceType,
+        identifier: str,
+        text: str,
+        metadata: dict,
+        manufacturer_owned: bool = False,
+    ) -> Source:
         return Source(
             product_id=product_id,
             source_type=source_type,
@@ -155,4 +178,5 @@ class IngestionService:
             raw_content=text[: self.settings.max_source_chars],
             extracted_metadata=metadata,
             authority_rank=authority_rank(source_type),
+            manufacturer_owned=manufacturer_owned,
         )

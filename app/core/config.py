@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://ferrox:ferrox@localhost:5432/ferrox"
     test_database_url: str = "sqlite+pysqlite:///:memory:"
     internal_api_key: str | None = None
+    clerk_secret_key: str | None = None
+    clerk_publishable_key: str | None = None
     jwt_secret: str | None = None
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "ferrox"
@@ -48,10 +50,14 @@ class Settings(BaseSettings):
     pdf_ocr_language: str = "eng"
     pdf_ocr_dpi: int = Field(default=200, ge=72, le=600)
     pdf_ocr_min_text_chars: int = Field(default=24, ge=0, le=2_000)
-    max_request_bytes: int = Field(default=25_000_000, ge=1_000_000)
+    max_request_bytes: int = Field(default=110_000_000, ge=1_000_000)
     max_pdf_upload_bytes: int = Field(default=20_000_000, ge=1_000_000)
     max_catalog_upload_bytes: int = Field(default=10_000_000, ge=100_000)
     max_catalog_rows: int = Field(default=10_000, ge=1, le=100_000)
+    max_reference_upload_bytes: int = Field(default=100_000_000, ge=1_000_000)
+    max_reference_rows: int = Field(default=500_000, ge=1, le=2_000_000)
+    delivery_expected_columns: int = Field(default=252, ge=1, le=2_000)
+    manufacturer_domain_allowlist: str = ""
     object_storage_backend: str = "local"
     local_storage_path: str = ".data/objects"
     s3_bucket: str = "ferrox-sources"
@@ -81,6 +87,14 @@ class Settings(BaseSettings):
     @property
     def allowed_hosts(self) -> list[str]:
         return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+
+    @property
+    def manufacturer_domains(self) -> set[str]:
+        return {
+            item.strip().lower().lstrip(".")
+            for item in self.manufacturer_domain_allowlist.split(",")
+            if item.strip()
+        }
 
     @property
     def is_production(self) -> bool:

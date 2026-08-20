@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -72,6 +72,9 @@ class Product(Base):
     pipeline_jobs: Mapped[list["PipelineJob"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     citations: Mapped[list["Citation"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     source_chunks: Mapped[list["SourceChunk"]] = relationship(back_populates="product", cascade="all, delete-orphan")
+    delivery_record: Mapped["ProductDeliveryRecord | None"] = relationship(
+        back_populates="product", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class Source(Base):
@@ -89,6 +92,7 @@ class Source(Base):
     content_length: Mapped[int | None] = mapped_column()
     content_sha256: Mapped[str | None] = mapped_column(String(64))
     authority_rank: Mapped[int] = mapped_column(default=3)
+    manufacturer_owned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     product: Mapped[Product] = relationship(back_populates="sources")
@@ -227,3 +231,70 @@ class PipelineJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     product: Mapped[Product] = relationship(back_populates="pipeline_jobs")
+
+
+class ReferenceDataset(Base):
+    __tablename__ = "reference_datasets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    dataset_type: Mapped[str] = mapped_column(String(60), index=True)
+    filename: Mapped[str] = mapped_column(String(500))
+    content_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="ready", index=True)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    sheet_names: Mapped[list[str]] = mapped_column(JSON, default=list)
+    columns: Mapped[dict[str, list[str]]] = mapped_column(JSON, default=dict)
+    dataset_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    records: Mapped[list["ReferenceRecord"]] = relationship(back_populates="dataset", cascade="all, delete-orphan")
+
+
+class ReferenceRecord(Base):
+    __tablename__ = "reference_records"
+    __table_args__ = (UniqueConstraint("dataset_id", "sheet_name", "row_number", name="uq_reference_row"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("reference_datasets.id", ondelete="CASCADE"), index=True)
+    dataset_type: Mapped[str] = mapped_column(String(60), index=True)
+    sheet_name: Mapped[str] = mapped_column(String(255), index=True)
+    row_number: Mapped[int] = mapped_column(Integer)
+    lookup_key: Mapped[str | None] = mapped_column(String(1000), index=True)
+    normalized_key: Mapped[str | None] = mapped_column(String(1000), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+    dataset: Mapped[ReferenceDataset] = relationship(back_populates="records")
+
+
+class ProductDeliveryRecord(Base):
+    __tablename__ = "product_delivery_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), unique=True, index=True)
+    schema_dataset_id: Mapped[str | None] = mapped_column(ForeignKey("reference_datasets.id", ondelete="SET NULL"))
+    schema_version: Mapped[str] = mapped_column(String(100), default="unilog-core-v1")
+    fields: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    descriptions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    quality: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    product: Mapped[Product] = relationship(back_populates="delivery_record")
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    ground_truth_dataset_id: Mapped[str] = mapped_column(ForeignKey("reference_datasets.id", ondelete="RESTRICT"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
+    total_items: Mapped[int] = mapped_column(Integer, default=0)
+    matched_items: Mapped[int] = mapped_column(Integer, default=0)
+    field_accuracy: Mapped[float] = mapped_column(Float, default=0.0)
+    character_limit_compliance: Mapped[float] = mapped_column(Float, default=0.0)
+    lov_compliance: Mapped[float] = mapped_column(Float, default=0.0)
+    manufacturer_accuracy: Mapped[float] = mapped_column(Float, default=0.0)
+    taxonomy_accuracy: Mapped[float] = mapped_column(Float, default=0.0)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    row_results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -27,7 +27,7 @@ class InternalCatalogRAG:
             if field.field_name in {"manufacturer", "model", "part_number"} and field.value
         )
         query = f"{product.name} {identity} {product.category or ''} {field_name}"
-        hits = self.search.search(query, limit)
+        hits = self.search.search(query, limit, manufacturer_owned_only=True)
         if not hits:
             return None
         result = self.llm.complete_json(LLMRequest(task="internal_enrich", prompt=self._prompt(query, hits)))

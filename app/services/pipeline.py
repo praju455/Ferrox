@@ -14,6 +14,7 @@ from app.services.enrichment import GeminiGroundedEnrichment
 from app.services.llm import LLMClient, LLMRequest
 from app.services.observability import SQLAlchemyLLMObserver
 from app.services.rag import InternalCatalogRAG
+from app.services.reference_data import ReferenceDataService
 from app.services.reconciliation import WeightedVotingReconciler
 from app.services.search import DuplicateDetector, SemanticSearchService, SourceChunkIndexer
 from app.services.validation import EngineeringValidator
@@ -40,6 +41,8 @@ class ProductPipeline:
         self.search = SemanticSearchService(db, settings, self.indexer.embeddings)
         self.duplicate_detector = DuplicateDetector(self.search, settings.duplicate_similarity_threshold)
         self.internal_rag = InternalCatalogRAG(self.search, self.llm)
+        self.references = ReferenceDataService(db, settings.max_reference_rows)
+        self.manufacturer_domains = settings.manufacturer_domains
 
     def run(
         self,
@@ -230,11 +233,13 @@ class ProductPipeline:
             if result is None and self.enrichment.enabled:
                 provider = "gemini"
                 try:
+                    domains = self._manufacturer_domains(product)
                     result = self.enrichment.enrich_field(
                         product.id,
                         product.name,
                         product.category or "Unknown",
                         name,
+                        domains,
                     )
                 except Exception as exc:
                     self._ensure_open_review(
@@ -271,6 +276,20 @@ class ProductPipeline:
                         provider=provider,
                     )
                 )
+
+    def _manufacturer_domains(self, product: Product) -> set[str]:
+        manufacturer = next(
+            (str(field.value) for field in product.fields if field.field_name == "manufacturer" and field.value),
+            None,
+        )
+        domains = set(self.manufacturer_domains)
+        domains.update(self.references.manufacturer_domains(manufacturer))
+        domains.update(
+            str((source.extracted_metadata or {}).get("hostname", "")).lower()
+            for source in product.sources
+            if source.manufacturer_owned and (source.extracted_metadata or {}).get("hostname")
+        )
+        return {domain.removeprefix("www.") for domain in domains if domain}
 
     def score_and_queue(self, product: Product) -> None:
         required = (product.dynamic_schema or {}).get("required", [])

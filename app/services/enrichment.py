@@ -2,6 +2,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -41,11 +42,15 @@ class GeminiGroundedEnrichment:
         product_name: str,
         category: str,
         field_name: str,
+        allowed_domains: set[str],
     ) -> GroundedField | None:
-        if not self.enabled:
+        if not self.enabled or not allowed_domains:
             return None
+        domain_list = ", ".join(sorted(allowed_domains))
         prompt = (
-            "Search authoritative manufacturer or distributor sources for exactly one industrial product attribute. "
+            "Search only the product manufacturer's own websites or manufacturer-hosted documentation for exactly one "
+            "industrial product attribute. Distributor sites, marketplaces, resellers, and aggregators are forbidden. "
+            f"The only approved manufacturer domains are: {domain_list}. "
             "Return JSON only with keys value, unit, confidence, evidence. Do not infer a value that the sources do "
             f"not explicitly support. Product: {product_name}. Category: {category}. Attribute: {field_name}."
         )
@@ -63,14 +68,14 @@ class GeminiGroundedEnrichment:
             )
             response.raise_for_status()
             data = response.json()
-            result = self._parse_response(data)
+            result = self._parse_response(data, allowed_domains)
             self._record(product_id, "success", started, data)
             return result
         except Exception as exc:
             self._record(product_id, "error", started, {}, exc)
             raise
 
-    def _parse_response(self, data: dict[str, Any]) -> GroundedField | None:
+    def _parse_response(self, data: dict[str, Any], allowed_domains: set[str]) -> GroundedField | None:
         text_blocks: list[dict[str, Any]] = []
         for step in data.get("steps", []):
             if step.get("type") == "model_output":
@@ -84,19 +89,23 @@ class GeminiGroundedEnrichment:
         validate_confidence(payload["confidence"])
         citations: list[GroundedCitation] = []
         seen_urls: set[str] = set()
+        has_unapproved_citation = False
         for block in text_blocks:
             block_text = block.get("text", "")
             for annotation in block.get("annotations", []):
                 if annotation.get("type") != "url_citation" or not annotation.get("url"):
                     continue
                 url = annotation["url"]
+                if not self._is_allowed_domain(url, allowed_domains):
+                    has_unapproved_citation = True
+                    continue
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
                 start = max(0, int(annotation.get("start_index", 0)))
                 end = min(len(block_text), int(annotation.get("end_index", len(block_text))))
                 citations.append(GroundedCitation(url, annotation.get("title"), block_text[start:end] or None))
-        if not citations:
+        if not citations or has_unapproved_citation:
             return None
         return GroundedField(
             value=payload["value"],
@@ -105,6 +114,11 @@ class GeminiGroundedEnrichment:
             evidence=payload.get("evidence"),
             citations=citations,
         )
+
+    @staticmethod
+    def _is_allowed_domain(url: str, allowed_domains: set[str]) -> bool:
+        host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+        return any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains)
 
     def _record(
         self,

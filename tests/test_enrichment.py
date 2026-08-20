@@ -59,7 +59,9 @@ def test_gemini_grounded_enrichment_requires_and_returns_citations(monkeypatch):
         observer=observer,
     )
 
-    result = service.enrich_field("product-1", "Aurora AXP-200", "Industrial Pump", "flow_rate")
+    result = service.enrich_field(
+        "product-1", "Aurora AXP-200", "Industrial Pump", "flow_rate", {"manufacturer.example"}
+    )
 
     assert result is not None
     assert result.value == "120"
@@ -72,7 +74,8 @@ def test_gemini_grounded_enrichment_requires_and_returns_citations(monkeypatch):
 class FakeGroundedEnrichment:
     enabled = True
 
-    def enrich_field(self, product_id, product_name, category, field_name):
+    def enrich_field(self, product_id, product_name, category, field_name, allowed_domains):
+        assert "manufacturer.example" in allowed_domains
         return GroundedField(
             value="Aurora Industrial",
             unit=None,
@@ -82,7 +85,11 @@ class FakeGroundedEnrichment:
         )
 
 
-def test_pipeline_persists_only_citation_backed_enrichment(db_session):
+def test_pipeline_persists_only_citation_backed_enrichment(db_session, monkeypatch):
+    monkeypatch.setenv("MANUFACTURER_DOMAIN_ALLOWLIST", "manufacturer.example")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
     product = Product(
         name="Aurora AXP-200",
         category="Industrial Pump",

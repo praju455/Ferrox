@@ -3,34 +3,39 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth, useClerk } from "@clerk/nextjs";
 import "../flowboard.css";
 import ProductUniverse3D from "./ProductUniverse3D";
+import { UserButton } from "@clerk/nextjs";
 
 import {
   apiFetch,
   apiDownload,
   Batch,
   CatalogAnalytics,
-  clearToken,
   fileToBase64,
-  getToken,
   LlmRun,
   PipelineJob,
   Product,
   ProductDetail,
+  ProductDelivery,
   RagAnswer,
+  ReferenceDataset,
   ReviewItem,
   SemanticSearchHit,
   User,
+  EvaluationRun,
+  setAuthTokenProvider,
 } from "../../lib/api";
 
-type View = "overview" | "products" | "reviews" | "batches" | "analytics" | "operations";
+type View = "overview" | "products" | "standards" | "reviews" | "batches" | "analytics" | "operations";
 type SourceMode = "text" | "url" | "pdf";
 type BatchDraft = { name: string; source: Record<string, string> };
 
 const views: Array<{ id: View; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "products", label: "Products" },
+  { id: "standards", label: "Standards" },
   { id: "analytics", label: "Intelligence" },
   { id: "reviews", label: "Review Queue" },
   { id: "batches", label: "Pipelines" },
@@ -39,6 +44,8 @@ const views: Array<{ id: View; label: string }> = [
 
 export default function WorkspacePage() {
   const router = useRouter();
+  const { getToken: getClerkToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { signOut: clerkSignOut } = useClerk();
   const [view, setView] = useState<View>("overview");
   const [products, setProducts] = useState<Product[]>([]);
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
@@ -46,6 +53,8 @@ export default function WorkspacePage() {
   const [jobs, setJobs] = useState<PipelineJob[]>([]);
   const [runs, setRuns] = useState<LlmRun[]>([]);
   const [analytics, setAnalytics] = useState<CatalogAnalytics | null>(null);
+  const [referenceDatasets, setReferenceDatasets] = useState<ReferenceDataset[]>([]);
+  const [evaluations, setEvaluations] = useState<EvaluationRun[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [product, setProduct] = useState<ProductDetail | null>(null);
@@ -53,6 +62,18 @@ export default function WorkspacePage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [authReady, setAuthReady] = useState(false);
+
+  useEffect(() => {
+    if (!authLoaded) return;
+    if (!isSignedIn) {
+      router.replace("/login");
+      return;
+    }
+    setAuthTokenProvider(() => getClerkToken());
+    setAuthReady(true);
+    return () => setAuthTokenProvider(null);
+  }, [authLoaded, getClerkToken, isSignedIn, router]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -61,47 +82,43 @@ export default function WorkspacePage() {
   const loadWorkspace = useCallback(async () => {
     setError("");
     try {
-      const [productRows, reviewRows, batchRows, jobRows, analyticsReport] = await Promise.all([
+      const [productRows, reviewRows, batchRows, jobRows, analyticsReport, referenceRows, evaluationRows] = await Promise.all([
         apiFetch<Product[]>("/products"),
         apiFetch<ReviewItem[]>("/reviews?status=open"),
         apiFetch<Batch[]>("/batches"),
         apiFetch<PipelineJob[]>("/pipeline/jobs?limit=20"),
         apiFetch<CatalogAnalytics>("/analytics/catalog"),
+        apiFetch<ReferenceDataset[]>("/reference-data"),
+        apiFetch<EvaluationRun[]>("/evaluations?limit=10"),
       ]);
       setProducts(productRows);
       setReviews(reviewRows);
       setBatches(batchRows);
       setJobs(jobRows);
       setAnalytics(analyticsReport);
+      setReferenceDatasets(referenceRows);
+      setEvaluations(evaluationRows);
       if (!selectedProductId && productRows.length) setSelectedProductId(productRows[0].id);
       
-      if (getToken()) {
-        try {
-          const currentUser = await apiFetch<User>("/auth/me");
-          setUser(currentUser);
-          if (currentUser.role === "admin") setRuns(await apiFetch<LlmRun[]>("/observability/llm-runs?limit=30"));
-        } catch {
-          if (!getToken()) router.replace("/login");
-        }
+      const currentUser = await apiFetch<User>("/auth/me");
+      setUser(currentUser);
+      if (currentUser.role === "admin") {
+        setRuns(await apiFetch<LlmRun[]>("/observability/llm-runs?limit=30"));
       } else {
-        try {
-          setRuns(await apiFetch<LlmRun[]>("/observability/llm-runs?limit=30"));
-        } catch {
-          setRuns([]);
-        }
+        setRuns([]);
       }
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Workspace could not be loaded";
       setError(message);
-      if (!getToken() && message.toLowerCase().includes("authentication")) router.replace("/login");
+      if (message.toLowerCase().includes("authentication")) router.replace("/login");
     } finally {
       setLoading(false);
     }
   }, [router, selectedProductId]);
 
   useEffect(() => {
-    void loadWorkspace();
-  }, [loadWorkspace]);
+    if (authReady) void loadWorkspace();
+  }, [authReady, loadWorkspace]);
 
   useEffect(() => {
     if (!selectedProductId) return;
@@ -116,9 +133,9 @@ export default function WorkspacePage() {
     ? products.reduce((total, item) => total + item.confidence_score, 0) / products.length
     : 0;
 
-  function signOut() {
-    clearToken();
-    router.push("/login");
+  async function signOut() {
+    setAuthTokenProvider(null);
+    await clerkSignOut({ redirectUrl: "/login" });
   }
 
   async function refreshProduct() {
@@ -159,8 +176,7 @@ export default function WorkspacePage() {
           </button>
           <button style={{ fontSize: '16px' }}>🔔</button>
           <div className="fb-user-menu">
-            <span style={{ fontSize: '14px', fontWeight: 500, color: '#fff' }}>👤 {user?.full_name || "Admin"}</span>
-            <button onClick={signOut} style={{ fontSize: '12px', marginLeft: '8px' }}>Logout</button>
+            <UserButton />
           </div>
         </div>
       </header>
@@ -209,6 +225,15 @@ export default function WorkspacePage() {
               />
             )}
             {view === "reviews" && <ReviewsView onError={setError} onRefresh={loadWorkspace} reviews={reviews} />}
+            {view === "standards" && (
+              <StandardsView
+                datasets={referenceDatasets}
+                evaluations={evaluations}
+                onError={setError}
+                onNotice={setNotice}
+                onRefresh={loadWorkspace}
+              />
+            )}
             {view === "batches" && <BatchesView batches={batches} jobs={jobs} onError={setError} onRefresh={loadWorkspace} onNotice={setNotice} />}
             {view === "analytics" && <AnalyticsView analytics={analytics} onError={setError} />}
             {view === "operations" && <Operations jobs={jobs} runs={runs} />}
@@ -400,6 +425,32 @@ function Overview({ products, reviews, activeJobs, averageCompleteness, averageC
 function ProductsView({ products, product, selectedId, setSelectedId, onRefresh, onNotice, onError, queuePipeline, switchToReviews }: any) {
   const [showTrace, setShowTrace] = useState(false);
   const [traceField, setTraceField] = useState<any>(null);
+  const [delivery, setDelivery] = useState<ProductDelivery | null>(null);
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+
+  useEffect(() => {
+    if (!product?.id) {
+      setDelivery(null);
+      return;
+    }
+    apiFetch<ProductDelivery>(`/products/${product.id}/delivery`)
+      .then(setDelivery)
+      .catch(() => setDelivery(null));
+  }, [product?.id]);
+
+  async function generateDelivery() {
+    if (!product?.id) return;
+    setDeliveryBusy(true);
+    try {
+      const generated = await apiFetch<ProductDelivery>(`/products/${product.id}/delivery`, { method: "POST" });
+      setDelivery(generated);
+      onNotice(`Delivery record generated with ${Object.keys(generated.fields).length} columns`);
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "Delivery record could not be generated");
+    } finally {
+      setDeliveryBusy(false);
+    }
+  }
 
   if (!product) {
     return (
@@ -441,6 +492,9 @@ function ProductsView({ products, product, selectedId, setSelectedId, onRefresh,
           </div>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
+          <button className="fb-btn outline" onClick={generateDelivery} disabled={deliveryBusy}>
+            {deliveryBusy ? "Generating..." : "Generate Delivery"}
+          </button>
           <button className="fb-btn outline" onClick={() => {}}>Add Evidence</button>
           <button className="fb-btn outline" onClick={switchToReviews}>Review Issues</button>
           <button className="fb-btn" onClick={() => onNotice("Pipeline queued")}>Run Pipeline →</button>
@@ -512,6 +566,29 @@ function ProductsView({ products, product, selectedId, setSelectedId, onRefresh,
           )}
         </div>
       </div>
+
+      {delivery && (
+        <section className="fb-delivery-band">
+          <div className="fb-delivery-heading">
+            <div>
+              <div className="fb-eyebrow">Customer delivery</div>
+              <h2>Deterministic content preview</h2>
+            </div>
+            <div className="fb-delivery-count">
+              <strong>{Object.keys(delivery.fields).length}</strong>
+              <span>columns</span>
+            </div>
+          </div>
+          <div className="fb-description-grid">
+            {Object.entries(delivery.descriptions).map(([name, value]) => (
+              <div key={name} className="fb-description-row">
+                <span>{name.replaceAll("_", " ")}</span>
+                <strong>{value || "Waiting for approved attributes"}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {showTrace && traceField && (
         <div className="fb-modal-overlay">
@@ -595,6 +672,201 @@ function ReviewsView({ reviews, onRefresh, onError }: any) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+const referenceTypes = [
+  { id: "manufacturer", label: "Manufacturer & brand master", note: "Approved legal names, brands, and owned domains" },
+  { id: "lov", label: "UniCat values", note: "Permitted attribute values and canonical spelling" },
+  { id: "uom", label: "Units & abbreviations", note: "Approved units, symbols, and display terms" },
+  { id: "fraction", label: "Decimal fractions", note: "Exact 1/64 inch conversion table" },
+  { id: "faucets", label: "Faucets standard", note: "Taxonomy, title order, and permitted values" },
+  { id: "fittings", label: "Fittings standard", note: "Fitting, connection, and material mappings" },
+  { id: "ground_truth", label: "200-item ground truth", note: "Input and 252-column Delivery Format sheets" },
+] as const;
+
+function StandardsView({ datasets, evaluations, onRefresh, onNotice, onError }: any) {
+  const [datasetType, setDatasetType] = useState<(typeof referenceTypes)[number]["id"]>("manufacturer");
+  const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [catalogFile, setCatalogFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState("");
+  const byType = new Map<string, ReferenceDataset>(datasets.map((dataset: ReferenceDataset) => [dataset.dataset_type, dataset]));
+  const groundTruth = byType.get("ground_truth");
+  const latest = evaluations[0] as EvaluationRun | undefined;
+
+  async function uploadReference(event: FormEvent) {
+    event.preventDefault();
+    if (!referenceFile) return;
+    setBusy("reference");
+    const body = new FormData();
+    body.append("file", referenceFile);
+    try {
+      const loaded = await apiFetch<ReferenceDataset>(`/reference-data/${datasetType}`, { method: "POST", body });
+      onNotice(`${loaded.filename} loaded with ${loaded.row_count.toLocaleString()} reference rows`);
+      setReferenceFile(null);
+      await onRefresh();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "Reference workbook could not be loaded");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function importCatalog(event: FormEvent) {
+    event.preventDefault();
+    if (!catalogFile) return;
+    setBusy("catalog");
+    const body = new FormData();
+    body.append("file", catalogFile);
+    try {
+      const batch = await apiFetch<Batch & { imported_rows: number }>("/imports/catalog", { method: "POST", body });
+      onNotice(`${batch.imported_rows.toLocaleString()} catalog rows queued for processing`);
+      setCatalogFile(null);
+      await onRefresh();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "Catalog workbook could not be imported");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function runEvaluation() {
+    if (!groundTruth) return;
+    setBusy("evaluation");
+    try {
+      const run = await apiFetch<EvaluationRun>("/evaluations", {
+        method: "POST",
+        body: JSON.stringify({ ground_truth_dataset_id: groundTruth.id, generate_missing_deliveries: true }),
+      });
+      onNotice(`Evaluation completed across ${run.total_items} ground-truth products`);
+      await onRefresh();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "Evaluation could not be completed");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div className="fb-standards">
+      <div className="fb-header fb-standards-header">
+        <div>
+          <div className="fb-eyebrow">Customer content system</div>
+          <h1>Standards & Evaluation</h1>
+          <p>Control the approved vocabulary, delivery structure, and measurable output quality.</p>
+        </div>
+        <div className={`fb-readiness ${groundTruth ? "ready" : ""}`}>
+          <strong>{datasets.length}/{referenceTypes.length}</strong>
+          <span>standards loaded</span>
+        </div>
+      </div>
+
+      <section className="fb-standards-band">
+        <div className="fb-band-heading">
+          <div>
+            <div className="fb-eyebrow">Reference library</div>
+            <h2>Approved customer masters</h2>
+          </div>
+          <form className="fb-upload-control" onSubmit={uploadReference}>
+            <select value={datasetType} onChange={(event) => setDatasetType(event.target.value as typeof datasetType)}>
+              {referenceTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}
+            </select>
+            <input
+              type="file"
+              accept=".xlsx,.xlsm"
+              aria-label="Choose reference workbook"
+              onChange={(event) => setReferenceFile(event.target.files?.[0] || null)}
+            />
+            <button className="fb-btn" disabled={!referenceFile || busy === "reference"}>
+              {busy === "reference" ? "Loading..." : "Load workbook"}
+            </button>
+          </form>
+        </div>
+        <div className="fb-reference-list">
+          {referenceTypes.map((item) => {
+            const dataset = byType.get(item.id);
+            const deliveryColumns = item.id === "ground_truth"
+              ? Number((dataset?.dataset_metadata?.delivery_columns as unknown[] | undefined)?.length || 0)
+              : 0;
+            return (
+              <div className="fb-reference-row" key={item.id}>
+                <span className={`fb-reference-state ${dataset ? "loaded" : ""}`} aria-hidden="true" />
+                <div>
+                  <strong>{item.label}</strong>
+                  <p>{item.note}</p>
+                </div>
+                <div className="fb-reference-meta">
+                  {dataset ? (
+                    <>
+                      <strong>{dataset.row_count.toLocaleString()} rows</strong>
+                      <span>{deliveryColumns ? `${deliveryColumns} delivery columns` : dataset.filename}</span>
+                    </>
+                  ) : <span>Not loaded</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="fb-standards-grid">
+        <section className="fb-standards-band">
+          <div className="fb-eyebrow">Catalog intake</div>
+          <h2>Import supplier workbook</h2>
+          <p className="fb-band-copy">Every visible worksheet is read, and each product keeps its workbook, sheet, and row lineage.</p>
+          <form className="fb-catalog-upload" onSubmit={importCatalog}>
+            <input
+              type="file"
+              accept=".xlsx,.xlsm,.csv,.tsv"
+              aria-label="Choose supplier catalog"
+              onChange={(event) => setCatalogFile(event.target.files?.[0] || null)}
+            />
+            <button className="fb-btn" disabled={!catalogFile || busy === "catalog"}>
+              {busy === "catalog" ? "Queuing..." : "Queue catalog"}
+            </button>
+          </form>
+        </section>
+
+        <section className="fb-standards-band">
+          <div className="fb-band-heading compact">
+            <div>
+              <div className="fb-eyebrow">Ground-truth benchmark</div>
+              <h2>200-item evaluation</h2>
+            </div>
+            <button className="fb-btn" disabled={!groundTruth || busy === "evaluation"} onClick={runEvaluation}>
+              {busy === "evaluation" ? "Evaluating..." : "Run evaluation"}
+            </button>
+          </div>
+          {!groundTruth && <p className="fb-band-copy">Load the Input vs Delivery Format workbook to enable scoring.</p>}
+          {latest && (
+            <>
+              <div className="fb-score-grid">
+                <Score label="Field accuracy" value={latest.field_accuracy} />
+                <Score label="Character rules" value={latest.character_limit_compliance} />
+                <Score label="LOV compliance" value={latest.lov_compliance} />
+                <Score label="Manufacturer" value={latest.manufacturer_accuracy} />
+                <Score label="Taxonomy" value={latest.taxonomy_accuracy} />
+              </div>
+              <div className="fb-evaluation-footer">
+                <span>{latest.matched_items} of {latest.total_items} products matched</span>
+                <button className="fb-text-button" onClick={() => apiDownload(`/evaluations/${latest.id}/report.csv`, `ferrox-evaluation-${latest.id}.csv`)}>
+                  Download row report
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Score({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="fb-score">
+      <strong>{Math.round(value * 100)}%</strong>
+      <span>{label}</span>
     </div>
   );
 }

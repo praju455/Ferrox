@@ -22,6 +22,12 @@ except ImportError:
     pyjwt = None
 
 try:
+    import clerk_backend_api.security
+    from clerk_backend_api.security.types import VerifyTokenOptions
+except ImportError:
+    pass
+
+try:
     from pwdlib import PasswordHash
 
     password_hash = PasswordHash.recommended()
@@ -158,6 +164,36 @@ def current_principal(
         service_key = x_api_key or supplied
         if service_key and hmac.compare_digest(service_key, settings.internal_api_key):
             return Principal(None, "service@ferrox.internal", UserRole.admin, service=True)
+
+    if supplied and settings.clerk_secret_key:
+        try:
+            claims = clerk_backend_api.security.verify_token(
+                supplied, VerifyTokenOptions(secret_key=settings.clerk_secret_key)
+            )
+            user_id = claims.get("sub")
+            if not user_id:
+                raise ValueError("No subject in Clerk token")
+        except Exception as exc:
+            raise _unauthorized("Invalid or expired Clerk token") from exc
+
+        user = db.get(User, user_id)
+        if not user:
+            user = User(
+                id=user_id,
+                email=f"{user_id}@clerk.ferrox.internal",
+                password_hash="clerk-managed",
+                full_name="Clerk User",
+                role=UserRole.reviewer,
+                is_active=True
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        if not user.is_active:
+            raise _unauthorized("User account is inactive")
+        return Principal(user.id, user.email, user.role)
+
     if supplied and settings.jwt_secret:
         try:
             user_id = decode_access_token(supplied, settings)
@@ -167,7 +203,7 @@ def current_principal(
         if not user or not user.is_active:
             raise _unauthorized("User account is inactive or missing")
         return Principal(user.id, user.email, user.role)
-    if not settings.internal_api_key and not settings.jwt_secret and not settings.is_production:
+    if not settings.internal_api_key and not settings.jwt_secret and not settings.clerk_secret_key and not settings.is_production:
         return Principal(None, "local@ferrox.dev", UserRole.admin, service=True)
     raise _unauthorized("Authentication required")
 

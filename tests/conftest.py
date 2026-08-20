@@ -14,6 +14,7 @@ def isolate_test_settings(monkeypatch):
     monkeypatch.setenv("FERROX_DISABLE_ENV_FILE", "1")
     monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
     monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

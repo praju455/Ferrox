@@ -42,6 +42,48 @@ export type Source = {
   content_length: number | null;
   content_sha256: string | null;
   authority_rank: number;
+  manufacturer_owned: boolean;
+  created_at: string;
+};
+
+export type ReferenceDataset = {
+  id: string;
+  dataset_type: string;
+  filename: string;
+  content_sha256: string;
+  status: string;
+  row_count: number;
+  sheet_names: string[];
+  columns: Record<string, string[]>;
+  dataset_metadata: Record<string, unknown> | null;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type ProductDelivery = {
+  id: string;
+  product_id: string;
+  schema_dataset_id: string | null;
+  schema_version: string;
+  fields: Record<string, unknown>;
+  descriptions: Record<string, string>;
+  quality: Record<string, unknown>;
+  generated_at: string;
+};
+
+export type EvaluationRun = {
+  id: string;
+  ground_truth_dataset_id: string;
+  status: string;
+  total_items: number;
+  matched_items: number;
+  field_accuracy: number;
+  character_limit_compliance: number;
+  lov_compliance: number;
+  manufacturer_accuracy: number;
+  taxonomy_accuracy: number;
+  metrics: Record<string, unknown>;
+  row_results: Array<Record<string, unknown>>;
   created_at: string;
 };
 
@@ -157,6 +199,15 @@ export type RagAnswer = {
 };
 
 const defaultApiBase = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000/api/v1";
+let asyncTokenProvider: (() => Promise<string | null>) | null = null;
+
+export function setAuthTokenProvider(provider: (() => Promise<string | null>) | null) {
+  asyncTokenProvider = provider;
+}
+
+async function resolveToken() {
+  return (await asyncTokenProvider?.()) || getToken();
+}
 
 export function getApiBase() {
   if (typeof window === "undefined") return defaultApiBase;
@@ -189,7 +240,7 @@ export async function login(email: string, password: string) {
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getToken();
+  const token = await resolveToken();
   const headers = new Headers(init.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
@@ -205,7 +256,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 }
 
 export async function apiDownload(path: string, filename: string) {
-  const token = getToken();
+  const token = await resolveToken();
   const response = await fetch(`${getApiBase()}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });

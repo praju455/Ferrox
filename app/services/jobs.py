@@ -68,13 +68,21 @@ def _ingest_batch_item_sources(db: Session, item: BatchItem) -> None:
         if source_type == "text":
             source = service.from_text(item.product.id, source_payload["raw_content"], identifier)
         elif source_type == "url":
-            source = service.from_url(item.product.id, source_payload["url"])
+            source = (
+                service.from_url(item.product.id, source_payload["url"], manufacturer_owned=True)
+                if source_payload.get("manufacturer_owned", False)
+                else service.from_url(item.product.id, source_payload["url"])
+            )
         elif source_type == "pdf":
             try:
                 content = base64.b64decode(source_payload["content_base64"], validate=True)
             except (ValueError, binascii.Error) as exc:
                 raise ValueError(f"Invalid base64 PDF for {identifier}") from exc
-            source = service.from_pdf_bytes(item.product.id, content, identifier)
+            source = (
+                service.from_pdf_bytes(item.product.id, content, identifier, manufacturer_owned=True)
+                if source_payload.get("manufacturer_owned", False)
+                else service.from_pdf_bytes(item.product.id, content, identifier)
+            )
         else:
             raise ValueError(f"Unsupported source type: {source_type}")
         db.add(source)

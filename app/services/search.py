@@ -114,11 +114,12 @@ class SemanticSearchService:
         limit: int,
         exclude_product_id: str | None = None,
         product_id: str | None = None,
+        manufacturer_owned_only: bool = False,
     ) -> list[SearchHit]:
         query_vector = self.embeddings.embed(query, "RETRIEVAL_QUERY")
         if self.db.bind and self.db.bind.dialect.name == "postgresql":
-            return self._postgres_search(query_vector, limit, exclude_product_id, product_id)
-        return self._python_search(query_vector, limit, exclude_product_id, product_id)
+            return self._postgres_search(query_vector, limit, exclude_product_id, product_id, manufacturer_owned_only)
+        return self._python_search(query_vector, limit, exclude_product_id, product_id, manufacturer_owned_only)
 
     def _postgres_search(
         self,
@@ -126,6 +127,7 @@ class SemanticSearchService:
         limit: int,
         exclude_product_id: str | None,
         product_id: str | None,
+        manufacturer_owned_only: bool,
     ) -> list[SearchHit]:
         vector_column = cast(SourceChunk.embedding, VECTOR(self.settings.embedding_dimensions))
         distance = vector_column.cosine_distance(query_vector).label("distance")
@@ -134,6 +136,8 @@ class SemanticSearchService:
             statement = statement.where(SourceChunk.product_id != exclude_product_id)
         if product_id:
             statement = statement.where(SourceChunk.product_id == product_id)
+        if manufacturer_owned_only:
+            statement = statement.join(Source, Source.id == SourceChunk.source_id).where(Source.manufacturer_owned.is_(True))
         rows = self.db.execute(statement.order_by(distance).limit(limit)).all()
         return [self._hit(chunk, max(0.0, 1.0 - float(distance_value))) for chunk, distance_value in rows]
 
@@ -143,12 +147,15 @@ class SemanticSearchService:
         limit: int,
         exclude_product_id: str | None,
         product_id: str | None,
+        manufacturer_owned_only: bool,
     ) -> list[SearchHit]:
         statement = select(SourceChunk)
         if exclude_product_id:
             statement = statement.where(SourceChunk.product_id != exclude_product_id)
         if product_id:
             statement = statement.where(SourceChunk.product_id == product_id)
+        if manufacturer_owned_only:
+            statement = statement.join(Source, Source.id == SourceChunk.source_id).where(Source.manufacturer_owned.is_(True))
         ranked = []
         for chunk in self.db.scalars(statement):
             vector = chunk.embedding or []

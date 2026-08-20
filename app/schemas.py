@@ -10,6 +10,7 @@ class SourceIn(BaseModel):
     raw_content: str | None = None
     url: HttpUrl | None = None
     content_base64: str | None = None
+    manufacturer_owned: bool = False
 
     @model_validator(mode="after")
     def validate_source_payload(self) -> "SourceIn":
@@ -53,6 +54,7 @@ class TextIngestionRequest(BaseModel):
 class UrlIngestionRequest(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     url: HttpUrl
+    manufacturer_owned: bool = False
 
 
 class TextSourceCreate(BaseModel):
@@ -62,6 +64,7 @@ class TextSourceCreate(BaseModel):
 
 class UrlSourceCreate(BaseModel):
     url: HttpUrl
+    manufacturer_owned: bool = False
 
 
 class SourceRead(BaseModel):
@@ -77,6 +80,7 @@ class SourceRead(BaseModel):
     content_length: int | None
     content_sha256: str | None
     authority_rank: int
+    manufacturer_owned: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -310,3 +314,55 @@ class FieldCorrectionRequest(BaseModel):
     confidence: float = Field(default=1.0, ge=0, le=1)
     evidence: str | None = None
     resolve_reviews: bool = True
+
+
+class ReferenceDatasetRead(BaseModel):
+    id: str
+    dataset_type: str
+    filename: str
+    content_sha256: str
+    status: str
+    row_count: int
+    sheet_names: list[str]
+    columns: dict[str, list[str]]
+    dataset_metadata: dict[str, Any] | None
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProductDeliveryRead(BaseModel):
+    id: str
+    product_id: str
+    schema_dataset_id: str | None
+    schema_version: str
+    fields: dict[str, Any]
+    descriptions: dict[str, Any]
+    quality: dict[str, Any]
+    generated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class EvaluationCreateRequest(BaseModel):
+    ground_truth_dataset_id: str
+    generate_missing_deliveries: bool = True
+
+
+class EvaluationRunRead(BaseModel):
+    id: str
+    ground_truth_dataset_id: str
+    status: str
+    total_items: int
+    matched_items: int
+    field_accuracy: float
+    character_limit_compliance: float
+    lov_compliance: float
+    manufacturer_accuracy: float
+    taxonomy_accuracy: float
+    metrics: dict[str, Any]
+    row_results: list[dict[str, Any]]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

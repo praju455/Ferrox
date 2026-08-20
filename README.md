@@ -2,11 +2,11 @@
 
 Backend and frontend for the **Industrial Product Intelligence Platform**: a system that converts scattered industrial product information from PDFs, URLs, and raw catalog text into traceable, validated, enriched structured product data.
 
-The backend lives in `app/`. The frontend lives in `frontend/` as a Next.js + TypeScript application with public, authentication, and catalog workspace routes.
+The backend lives in `app/`. The frontend lives in `frontend/` as a Next.js + TypeScript application with public, Clerk authentication, and catalog workspace routes.
 
 ## Frontend Direction
 
-The landing page uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. The connected `/workspace` adds product/source operations, asynchronous pipeline tracking, citation inspection, human review, catalog-file import, semantic catalog retrieval, quality analytics, report export, batch staging, and LLM telemetry. `/login` handles JWT access. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
+The landing page uses an industrial inspection visual system derived from selected layouts in the local `front/` design catalog. The connected `/workspace` adds product/source operations, asynchronous pipeline tracking, citation inspection, human review, multi-sheet catalog import, customer reference-master management, 252-column delivery previews, ground-truth evaluation, semantic retrieval, quality analytics, report export, batch staging, and LLM telemetry. `/login` uses Clerk and passes its bearer token to the FastAPI verifier; legacy Ferrox JWTs and service API keys remain supported. The catalog remains local and ignored; only original Ferrox frontend code is committed to this repository.
 
 ## Backend Status
 
@@ -44,6 +44,12 @@ Implemented stages:
 30. PostgreSQL pgvector source-chunk embeddings with HNSW cosine search, Gemini embeddings when configured, deterministic local embeddings for development, semantic search, and duplicate detection.
 31. Internal catalog RAG that accepts only retrieved chunk IDs as citations, tries catalog evidence before external grounded enrichment, and rejects unsupported answers.
 32. Catalog analytics and CSV reporting for quality, coverage, validation, reviews, batches, categories, field status, and provider performance, connected to the Next.js workspace.
+33. Native XLSX/XLSM catalog ingestion across every visible worksheet, including offset-header detection, placeholder cleaning, and workbook/sheet/row lineage.
+34. Versioned manufacturer/brand, LOV, UOM, decimal/fraction, Faucets, Fittings, and 200-item ground-truth masters with batched loading for large reference files.
+35. Exact delivery schemas learned from the ground-truth `Delivery Format` worksheet, including all 252 original customer column names and intentionally blank unsupported fields.
+36. Deterministic product title, short, long, invoice, and mobile descriptions with fixed attribute order, approved UOM/fraction rendering, casing rules, and character limits.
+37. Manufacturer-owned enrichment policy enforced for internal RAG sources and external citations; marketplace, distributor, reseller, and unapproved-domain citations are rejected.
+38. Reproducible ground-truth evaluation with field accuracy, character-limit compliance, LOV compliance, manufacturer accuracy, taxonomy accuracy, unmatched-item penalties, row errors, and CSV export.
 
 ## Local Setup
 
@@ -53,6 +59,7 @@ python3 -m venv .venv
 # macOS host development only; Docker installs this automatically
 brew install tesseract
 cp .env.example .env
+cp frontend/.env.example frontend/.env.local
 docker compose up -d postgres minio minio-init
 .venv/bin/python -m alembic upgrade head
 .venv/bin/python -m uvicorn app.api:app --reload
@@ -97,6 +104,20 @@ To run tests:
 .venv/bin/python -m pytest
 ```
 
+## Customer Reference Workflow
+
+Load each workbook through the **Standards** view in the Next.js workspace, or use `POST /api/v1/reference-data/{dataset_type}`. Supported types are `manufacturer`, `lov`, `uom`, `fraction`, `faucets`, `fittings`, and `ground_truth`. Replacing a type makes the new version active but retains the previous version for audit history.
+
+Recommended order:
+
+1. Load manufacturer/brand, LOV, UOM, fraction, Faucets, and Fittings masters.
+2. Load `Unilog-Sample_200_Items-Input-vs-Output.xlsx` as `ground_truth`.
+3. Import `Sample-1000_Items.xlsx` through `POST /api/v1/imports/catalog` or the Standards view.
+4. Process the queued batch, run product pipelines, and generate product deliveries with `POST /api/v1/products/{product_id}/delivery`.
+5. Run `POST /api/v1/evaluations` with the active ground-truth dataset ID, then download `/api/v1/evaluations/{evaluation_id}/report.csv`.
+
+The reference files are customer-provided and are not committed to this repository. Until the ground-truth workbook is loaded, delivery generation uses a small core preview schema and returns `quality.schema_ready=false`. Once loaded, every delivery record uses the workbook's exact original column names and validates the expected 252-column count.
+
 To run the frontend UI:
 
 ```bash
@@ -116,6 +137,8 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `DATABASE_URL` | Primary PostgreSQL SQLAlchemy URL. |
 | `TEST_DATABASE_URL` | Test database URL; defaults to in-memory SQLite for fast tests. |
 | `INTERNAL_API_KEY` | Optional API key for mutating endpoints. Leave blank for local-only development. |
+| `CLERK_SECRET_KEY` | Backend secret used to verify Clerk bearer tokens. |
+| `CLERK_PUBLISHABLE_KEY` | Optional backend-visible Clerk project identifier. |
 | `JWT_SECRET` | Signing secret for user access tokens. Required in production. |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | Token issuer and intended API audience. |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT lifetime. Default: 480 minutes. |
@@ -135,10 +158,13 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `DOCUMENT_CHUNK_CHARS` / `DOCUMENT_CHUNK_OVERLAP_CHARS` | Extraction/classification chunk size and overlap. |
 | `ENABLE_PDF_OCR` / `PDF_OCR_*` | Adaptive Tesseract OCR switch, language, resolution, and native-text threshold. |
 | `MAX_CATALOG_UPLOAD_BYTES` / `MAX_CATALOG_ROWS` | Catalog-file size and row limits. |
+| `MAX_REFERENCE_UPLOAD_BYTES` / `MAX_REFERENCE_ROWS` | Large reference-workbook size and aggregate row limits. |
+| `DELIVERY_EXPECTED_COLUMNS` | Expected customer delivery width. Default: 252. |
+| `MANUFACTURER_DOMAIN_ALLOWLIST` | Comma-separated manufacturer-owned domains allowed for external enrichment in addition to domains from the manufacturer master. |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | Gemini embedding model and fixed pgvector width. |
 | `EMBEDDING_CHUNK_CHARS` / `EMBEDDING_CHUNK_OVERLAP_CHARS` | Search-index chunk size and overlap. |
 | `DUPLICATE_SIMILARITY_THRESHOLD` | Minimum semantic similarity used to flag possible duplicates. |
-| `MAX_REQUEST_BYTES` | Maximum accepted HTTP request size. Default: 25 MB. |
+| `MAX_REQUEST_BYTES` | Maximum accepted HTTP request size. Default: 110 MB to admit the bounded 100 MB reference-workbook route. |
 | `MAX_PDF_UPLOAD_BYTES` | Maximum accepted PDF payload. Default: 20 MB. |
 | `OBJECT_STORAGE_BACKEND` | `local` for filesystem development or `s3` for S3/MinIO. |
 | `LOCAL_STORAGE_PATH` | Private local object directory used by the local backend. |
@@ -152,6 +178,7 @@ All secrets are read from environment variables. Do not commit `.env`.
 | `BACKUP_RETENTION_COUNT` | Number of newest object-store dumps retained. Default: 14. |
 | `BACKUP_PREFIX` | Private object key prefix for database dumps. |
 | `NEXT_PUBLIC_API_BASE` | Browser-visible API base used by the Next.js workspace. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Browser-visible Clerk key configured in `frontend/.env.local`. |
 
 LLM calls are routed in `LLM_PROVIDER_ORDER`. Each provider is asked for JSON only, parsed defensively, validated against the task contract, retried on malformed output, and then falls through to the next provider if it still fails. If no live keys are configured, the deterministic mock provider keeps local tests and demos working without secrets.
 
@@ -175,7 +202,7 @@ Authorization: Bearer your-jwt
 X-API-Key: your-service-key
 ```
 
-Production mode (`APP_ENV=production`) refuses to start without `JWT_SECRET`. Every response includes `X-Request-ID`, and clients may send their own request ID for end-to-end tracing. Local development remains open only when neither JWT nor service-key authentication is configured.
+Production mode (`APP_ENV=production`) refuses to start without either `CLERK_SECRET_KEY` or `JWT_SECRET`. Every response includes `X-Request-ID`, and clients may send their own request ID for end-to-end tracing. Local development remains open only when Clerk, JWT, and service-key authentication are all unconfigured.
 
 ## Architecture
 
@@ -183,6 +210,7 @@ Production mode (`APP_ENV=production`) refuses to start without `JWT_SECRET`. Ev
 flowchart TD
     UI["Next.js frontend\nlanding + login + operations workspace"] --> Inspector["Interactive source inspector\nPDF / URL / text"]
     UI --> Workspace["Connected workspace\nproducts / reviews / batches / analytics / operations"]
+    UI --> StandardsUI["Standards workspace\nreference masters + delivery + evaluation"]
     Workspace --> Intelligence["Catalog intelligence\nsemantic search + RAG + reports"]
     Workspace --> Guard
     UI --> ReviewUI["Conflict review preview"]
@@ -190,11 +218,11 @@ flowchart TD
     HealthUI --> Guard["API safety layer\nCORS + trusted hosts + request ID + limits"]
     Inspector -. "frontend contract" .-> Guard
     ReviewUI -. "frontend contract" .-> Guard
-    Guard --> Auth["JWT identity + role authorization\nreviewer / admin / service key"]
+    Guard --> Auth["Clerk or JWT identity + role authorization\nreviewer / admin / service key"]
     Auth --> API["FastAPI backend"]
     Auth --> Users[("User accounts\nArgon2 password hashes")]
     API --> Products["Product collection API\ncreate + list + search + delete"]
-    Products --> SourceAPI["Product source API\nattach + list PDF / URL / text / CSV catalog"]
+    Products --> SourceAPI["Product source API\nattach + list PDF / URL / text / catalog files"]
     SourceAPI --> Ingest
     API --> DB[("PostgreSQL")]
     Migration["Alembic migrations"] --> DB
@@ -206,6 +234,7 @@ flowchart TD
     Ingest --> URL["URL scraper\nrequests + BeautifulSoup"]
     Ingest --> Text["Raw text parser"]
     Ingest --> CSV["CSV / TSV catalog importer\ncolumn mapping + queued rows"]
+    Ingest --> XLSX["Native multi-sheet XLSX importer\noffset headers + row lineage"]
     Ingest --> Sources["Raw sources\nsource_id + product_id + authority rank"]
     Sources --> DB
     Sources --> Chunk["Bounded overlapping chunks\ncharacter offsets + chunk lineage"]
@@ -221,8 +250,8 @@ flowchart TD
     Extract --> Units["Pint unit detection\ncanonical engineering units"]
     Units --> Reconcile["Weighted source voting\nunit equivalence + LLM tie break"]
     Reconcile --> Validate["Engineering ranges + cross-field rules\nLLM semantic validation"]
-    Validate --> InternalRAG["Internal catalog RAG\nretrieved chunk citations only"]
-    InternalRAG --> Enrich["External Gemini Search fallback\none missing field per cited query"]
+    Validate --> InternalRAG["Internal catalog RAG\nmanufacturer-owned chunks only"]
+    InternalRAG --> Enrich["External Gemini Search fallback\napproved manufacturer domains only"]
     Enrich --> Citations["Citation records\nURL + title + cited text"]
     Citations --> DB
     Enrich --> Score["Confidence + completeness scoring"]
@@ -261,6 +290,18 @@ flowchart TD
     Analytics --> DB
     Analytics --> Reports["JSON dashboard + CSV export"]
     Reports --> Intelligence
+
+    StandardsUI --> RefAPI["Reference data API\nversioned XLSX masters"]
+    RefAPI --> RefParser["All-sheet parser\nmerged/offset headers + placeholders"]
+    RefParser --> Masters[("Reference records\nmanufacturer / LOV / UOM / fractions\nFaucets / Fittings / ground truth")]
+    Masters --> Normalize["Deterministic normalization\nmanufacturer + brand + UOM + fractions"]
+    Normalize --> Delivery["Customer delivery builder\nexact 252-column schema"]
+    Pipeline --> Delivery
+    Delivery --> Descriptions["Deterministic descriptions\ntitle / short / long / invoice / mobile"]
+    Delivery --> DB
+    Masters --> Evaluation["200-item evaluation harness\nfield + limits + LOV + manufacturer + taxonomy"]
+    Delivery --> Evaluation
+    Evaluation --> Reports
 ```
 
 ## Data Model
@@ -278,6 +319,9 @@ Core persisted entities:
 | `PipelineJob` | Durable product pipeline request with selected sources/stages, lifecycle timestamps, and retryable failure state. |
 | `Citation` | URL, title, and cited response span supporting one grounded enriched field. |
 | `LLMRun` | Provider attempt status, model/task, latency, token usage, estimated cost, and error context. |
+| `ReferenceDataset` / `ReferenceRecord` | Versioned workbook metadata and row-level reference records with sheet/row lineage, normalized lookup keys, and exact headers. |
+| `ProductDeliveryRecord` | Product output keyed by the active customer's exact delivery columns, plus deterministic descriptions and schema/coverage checks. |
+| `EvaluationRun` | Aggregate quality metrics and row/field-level comparison failures against the active ground-truth workbook. |
 | `User` | Human account, password hash, active state, last login, and reviewer/admin role. |
 
 Structured extracted fields use this exact output shape:
@@ -312,7 +356,7 @@ Structured extracted fields use this exact output shape:
 
 ## API Contract
 
-Catalog endpoints require a reviewer/admin JWT when authentication is configured. Health and metrics endpoints remain available for infrastructure probes; a service API key can authenticate automation.
+Catalog endpoints require a reviewer/admin Clerk or Ferrox JWT bearer token when authentication is configured. Health and metrics endpoints remain available for infrastructure probes; a service API key can authenticate automation.
 
 ### Authentication And Users
 
