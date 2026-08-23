@@ -141,7 +141,7 @@ export default function WorkspacePage() {
     <main className="workspace-shell">
       <aside className="workspace-sidebar">
         <Link className="brand workspace-brand" href="/">
-          <span className="brand-mark">F/</span><span className="brand-word">Ferrox</span>
+          <img src="/logo.png" alt="Ferrox Logo" style={{ height: '36px', width: 'auto', objectFit: 'contain' }} /><span className="brand-word">Ferrox</span>
         </Link>
         <nav aria-label="Workspace navigation">
           {views.map((item) => (
